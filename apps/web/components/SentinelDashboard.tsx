@@ -485,33 +485,29 @@ export function SentinelDashboard() {
       return;
     }
 
+    const scanUrl = proofScanUrl(key, value, execution);
+    if (scanUrl) {
+      window.open(scanUrl, "_blank", "noopener,noreferrer");
+    }
+
     try {
       await copyText(value);
       setCopiedProofKey(key);
       window.setTimeout(() => setCopiedProofKey((current) => (current === key ? null : current)), 1800);
 
-      const scanUrl = proofScanUrl(key, value, execution);
-      if (scanUrl) {
-        window.open(scanUrl, "_blank", "noopener,noreferrer");
-      }
-
       pushToast({
         tone: "success",
-        title: `${label} copied`,
+        title: scanUrl ? `${label} · BaseScan opened` : `${label} copied`,
         message: scanUrl
-          ? "Opened confirmed Base transaction on BaseScan."
+          ? "Value copied to clipboard."
           : "Off-chain binding hash copied (not a Base transaction).",
-        action: scanUrl ? { label: "Open BaseScan", href: scanUrl } : undefined,
       });
     } catch {
-      const scanUrl = proofScanUrl(key, value, execution);
       if (scanUrl) {
-        window.open(scanUrl, "_blank", "noopener,noreferrer");
         pushToast({
           tone: "info",
-          title: `${label} opened`,
-          message: "BaseScan opened — clipboard access was blocked.",
-          action: { label: "Open BaseScan", href: scanUrl },
+          title: `${label} opened on BaseScan`,
+          message: "Clipboard access was blocked.",
         });
         return;
       }
@@ -754,7 +750,7 @@ export function SentinelDashboard() {
           />
           <p className="proof-hint">
             {execution
-              ? "On-chain txs open BaseScan. Delegation/digest/proof hashes are off-chain bindings until anchored."
+              ? "On-chain items open BaseScan in a new tab. Other artifacts copy to clipboard."
               : "Artifacts appear after execution"}
           </p>
           <div className="proof-grid">
@@ -795,8 +791,8 @@ export function SentinelDashboard() {
                   title={
                     ready
                       ? proofScanUrl(key, value ?? "", execution)
-                        ? `Copy ${label} and open BaseScan`
-                        : `Copy ${label} (off-chain binding)`
+                        ? `Open ${label} on BaseScan (also copies)`
+                        : `Copy ${label}`
                       : "Pending execution"
                   }
                 >
