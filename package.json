@@ -1,0 +1,20 @@
+{
+  "name": "r402-sentinel",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @r402/web",
+    "build": "npm run build -w @r402/web",
+    "lint": "npm run lint -w @r402/web",
+    "test": "npm run test -w @r402/core",
+    "test:e2e": "playwright test",
+    "test:contracts": "forge test --root contracts"
+  },
+  "devDependencies": {
+    "playwright": "^1.60.0"
+  }
+}
