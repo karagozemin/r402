@@ -23,6 +23,197 @@ button, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.45; }
 
+.intro-placeholder { min-height: 100vh; background: var(--bg); }
+
+.intro {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  overflow: hidden;
+}
+.intro-enter { animation: intro-bg-in 0.5s ease; }
+.intro-exit { animation: intro-bg-out 0.52s ease forwards; }
+
+.intro-glow {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(100px);
+  pointer-events: none;
+  opacity: 0.12;
+}
+.intro-glow-one {
+  width: 420px;
+  height: 420px;
+  background: var(--green);
+  top: 18%;
+  left: 50%;
+  transform: translateX(-50%);
+}
+.intro-glow-two {
+  width: 320px;
+  height: 320px;
+  background: var(--orange);
+  bottom: 10%;
+  right: 12%;
+  opacity: 0.07;
+}
+
+.intro-content {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  padding: 0 24px;
+  max-width: 560px;
+  animation: intro-content-in 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both;
+}
+.intro-exit .intro-content {
+  animation: intro-content-out 0.45s ease forwards;
+}
+
+.intro-logo-wrap {
+  width: 96px;
+  height: 96px;
+  margin: 0 auto 24px;
+  border-radius: 22px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  animation: intro-logo-in 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both;
+}
+.intro-logo { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.intro-eyebrow {
+  margin: 0 0 10px;
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  animation: intro-fade-up 0.6s ease 0.35s both;
+}
+.intro-title {
+  margin: 0 0 14px;
+  font-size: clamp(36px, 6vw, 52px);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  animation: intro-fade-up 0.6s ease 0.45s both;
+}
+.intro-title span { color: var(--green); }
+.intro-tagline {
+  margin: 0 0 28px;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.55;
+  animation: intro-fade-up 0.6s ease 0.55s both;
+}
+.intro-steps {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 28px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  animation: intro-fade-up 0.6s ease 0.65s both;
+}
+.intro-steps i,
+.intro-step-line {
+  width: 16px;
+  height: 1px;
+  background: var(--line);
+  flex-shrink: 0;
+  transition: background 0.35s ease, box-shadow 0.35s ease;
+}
+.intro-step-line.active {
+  background: var(--green);
+  box-shadow: 0 0 8px rgba(185, 255, 104, 0.35);
+}
+.intro-steps span {
+  transition: color 0.35s ease;
+}
+.intro-steps span.active { color: var(--text); }
+
+.intro-progress {
+  width: min(280px, 70vw);
+  height: 2px;
+  margin: 0 auto;
+  background: var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  animation: intro-fade-up 0.5s ease 0.75s both;
+}
+.intro-progress-bar {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--green);
+  border-radius: inherit;
+  transition: width 0.08s linear;
+  box-shadow: 0 0 10px rgba(185, 255, 104, 0.45);
+}
+
+.app-root-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.app-root-visible {
+  opacity: 1;
+  animation: app-reveal 0.65s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes intro-bg-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes intro-bg-out {
+  to { opacity: 0; visibility: hidden; }
+}
+@keyframes intro-content-in {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes intro-content-out {
+  to { opacity: 0; transform: translateY(-10px) scale(0.98); }
+}
+@keyframes intro-logo-in {
+  from { opacity: 0; transform: scale(0.88); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes intro-fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes app-reveal {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .intro-enter,
+  .intro-exit,
+  .intro-content,
+  .intro-logo-wrap,
+  .intro-eyebrow,
+  .intro-title,
+  .intro-tagline,
+  .intro-steps,
+  .intro-progress,
+  .intro-progress-bar,
+  .app-root-visible {
+    animation: none !important;
+  }
+  .intro-progress-bar { width: 100%; }
+  .app-root-hidden { opacity: 1; pointer-events: auto; }
+}
+
 .shell {
   min-height: 100vh;
   position: relative;

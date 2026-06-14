@@ -1,5 +1,5 @@
-import { SentinelDashboard } from "../components/SentinelDashboard";
+import { HomeClient } from "../components/HomeClient";
 
 export default function Home() {
-  return <SentinelDashboard />;
+  return <HomeClient />;
 }
