@@ -100,7 +100,7 @@ function proofScanUrl(key: string, value: string, execution?: ExecutionResponse 
   }
 
   if ((key === "digest" || key === "proof") && proofRegistryAddress) {
-    return `${explorerBase}/address/${proofRegistryAddress}#readContract`;
+    return `${explorerBase}/address/${proofRegistryAddress}`;
   }
 
   if (key === "delegation" || key === "digest" || key === "proof" || key === "relay") {
