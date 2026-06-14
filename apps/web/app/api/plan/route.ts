@@ -1,5 +1,5 @@
-import { assessPlan, buildDelegationTree, planSchema } from "@r402/core";
-import { runVenicePlanner, runVeniceRiskAgent, runVeniceResearchSnippet } from "@r402/adapters";
+import { assessPlan, buildDelegationTree } from "@r402/core";
+import { normalizePlannerOutput, runVenicePlanner, runVeniceRiskAgent, runVeniceResearchSnippet } from "@r402/adapters";
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 
@@ -74,7 +74,7 @@ async function createPlan(intent: string) {
             {
               role: "system",
               content:
-                "Return strict JSON with intent, chainId=8453, maxBudgetUSDC<=8, x402Resources, allowedTargets, requiredFunctions, justification, proofSummary.",
+                'Return strict JSON: {"intent":"...","chainId":8453,"maxBudgetUSDC":8,"x402Resources":["https://api.venice.ai/api/v1/chat/completions"],"allowedTargets":["0x1111111111111111111111111111111111111111"],"requiredFunctions":["research(bytes)"],"justification":"...","proofSummary":"..."}',
             },
             { role: "user", content: intent },
           ],
@@ -83,7 +83,10 @@ async function createPlan(intent: string) {
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error?.message ?? `HTTP ${response.status}`);
-      const plan = constrainPlan(planSchema.parse(JSON.parse(payload.choices[0].message.content)), intent);
+      const plan = constrainPlan(
+        normalizePlannerOutput(JSON.parse(payload.choices[0].message.content), intent),
+        intent,
+      );
       return {
         plan,
         source: "groq-live",
