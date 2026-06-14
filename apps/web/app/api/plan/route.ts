@@ -1,9 +1,7 @@
 import { assessPlan, buildDelegationTree, planSchema } from "@r402/core";
+import { runVenicePlanner, runVeniceRiskAgent, runVeniceResearchSnippet } from "@r402/adapters";
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
-
-const plannerSystem =
-  "You are an onchain policy planner. Return strict JSON only with intent, chainId=8453, maxBudgetUSDC<=8, x402Resources, allowedTargets, requiredFunctions, justification, proofSummary. Never expand authority or claim research has already happened. Every URL must be absolute and every allowed target must be a string.";
 
 const allowedResources = [
   "https://api.venice.ai/api/v1/chat/completions",
@@ -14,50 +12,6 @@ const allowedTargets = [
   "0x2222222222222222222222222222222222222222",
 ];
 const allowedFunctions = ["research(bytes)", "anchorProof(bytes32,bytes32,bytes32)"];
-
-const planJsonSchema = {
-  name: "execution_plan",
-  strict: true,
-  schema: {
-    type: "object",
-    properties: {
-      intent: { type: "string" },
-      chainId: { type: "integer", enum: [8453] },
-      maxBudgetUSDC: { type: "number", minimum: 0.01, maximum: 20 },
-      x402Resources: {
-        type: "array",
-        items: { type: "string" },
-        minItems: 1,
-        maxItems: 3,
-      },
-      allowedTargets: {
-        type: "array",
-        items: { type: "string" },
-        minItems: 1,
-        maxItems: 5,
-      },
-      requiredFunctions: {
-        type: "array",
-        items: { type: "string" },
-        minItems: 1,
-        maxItems: 5,
-      },
-      justification: { type: "string" },
-      proofSummary: { type: "string" },
-    },
-    required: [
-      "intent",
-      "chainId",
-      "maxBudgetUSDC",
-      "x402Resources",
-      "allowedTargets",
-      "requiredFunctions",
-      "justification",
-      "proofSummary",
-    ],
-    additionalProperties: false,
-  },
-};
 
 function demoPlan(intent: string) {
   return {
@@ -89,58 +43,18 @@ function constrainPlan(plan: ReturnType<typeof demoPlan>, intent: string) {
   };
 }
 
-async function requestJsonPlan(input: {
-  apiKey: string;
-  endpoint: string;
-  model: string;
-  intent: string;
-  extraBody?: Record<string, unknown>;
-}) {
-  const response = await fetch(input.endpoint, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${input.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: input.model,
-        messages: [
-          {
-            role: "system",
-            content: plannerSystem,
-          },
-          { role: "user", content: input.intent },
-        ],
-        response_format: { type: "json_object" },
-        ...input.extraBody,
-      }),
-    });
-  const payload = await response.json();
-  if (!response.ok) {
-    const message =
-      typeof payload.error === "string"
-        ? payload.error
-        : payload.error?.message ?? `HTTP ${response.status}`;
-    throw new Error(message);
-  }
-  return planSchema.parse(JSON.parse(payload.choices[0].message.content));
-}
-
 async function createPlan(intent: string) {
   const failures: string[] = [];
 
   if (process.env.VENICE_API_KEY) {
     try {
-      const plan = await requestJsonPlan({
-        apiKey: process.env.VENICE_API_KEY,
-        endpoint: "https://api.venice.ai/api/v1/chat/completions",
-        model: process.env.VENICE_MODEL ?? "venice-uncensored-1-2",
-        intent,
-        extraBody: {
-          venice_parameters: { include_venice_system_prompt: false },
-        },
-      });
-      return { plan: constrainPlan(plan, intent), source: "venice-live" };
+      const plan = constrainPlan(await runVenicePlanner(intent), intent);
+      const research = await runVeniceResearchSnippet(intent);
+      return {
+        plan,
+        source: "venice-live",
+        research,
+      };
     } catch (error) {
       failures.push(`Venice: ${error instanceof Error ? error.message : "unknown error"}`);
     }
@@ -148,22 +62,30 @@ async function createPlan(intent: string) {
 
   if (process.env.GROQ_API_KEY) {
     try {
-      const plan = await requestJsonPlan({
-        apiKey: process.env.GROQ_API_KEY,
-        endpoint: "https://api.groq.com/openai/v1/chat/completions",
-        model: process.env.GROQ_MODEL ?? "openai/gpt-oss-20b",
-        intent,
-        extraBody: {
-          response_format: {
-            type: "json_schema",
-            json_schema: planJsonSchema,
-          },
-          reasoning_effort: "low",
-          reasoning_format: "hidden",
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+          "Content-Type": "application/json",
         },
+        body: JSON.stringify({
+          model: process.env.GROQ_MODEL ?? "openai/gpt-oss-20b",
+          messages: [
+            {
+              role: "system",
+              content:
+                "Return strict JSON with intent, chainId=8453, maxBudgetUSDC<=8, x402Resources, allowedTargets, requiredFunctions, justification, proofSummary.",
+            },
+            { role: "user", content: intent },
+          ],
+          response_format: { type: "json_object" },
+        }),
       });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error?.message ?? `HTTP ${response.status}`);
+      const plan = constrainPlan(planSchema.parse(JSON.parse(payload.choices[0].message.content)), intent);
       return {
-        plan: constrainPlan(plan, intent),
+        plan,
         source: "groq-live",
         warning: failures.length ? `${failures.join(" | ")} Groq fallback active.` : undefined,
       };
@@ -189,12 +111,17 @@ export async function POST(request: Request) {
   try {
     const planner = await createPlan(intent);
     const plan = planner.plan;
+    const risk = process.env.VENICE_API_KEY
+      ? await runVeniceRiskAgent(plan)
+      : assessPlan(plan);
+
     return NextResponse.json({
       plan,
-      risk: assessPlan(plan),
+      risk,
       delegations: buildDelegationTree(plan, randomUUID()),
       source: planner.source,
       warning: planner.warning,
+      research: "research" in planner ? planner.research : undefined,
     });
   } catch (error) {
     return NextResponse.json(

@@ -516,19 +516,22 @@ The UI tracks six phases with explicit state transitions:
 
 ## Live integration boundaries
 
-The demo intentionally simulates relay and registry steps while preserving real adapter interfaces. Wire production here:
+Live adapters live in `@r402/adapters` and are consumed by the API routes. Demo mode simulates relay/registry when credentials are absent; flip env flags for production.
 
 | Component | File | To go live |
 | --- | --- | --- |
-| Planner | `apps/web/app/api/plan/route.ts` | Already supports Venice + Groq; tighten allowlists for production |
-| Permission grant | `apps/web/lib/metamask.ts` | Set `NEXT_PUBLIC_SESSION_ACCOUNT`; user on MetaMask Flask + Smart Account |
-| x402 settlement | `apps/web/app/api/executions/route.ts` | Replace simulated 402 flow with real payment + `PAYMENT-RESPONSE` header |
-| 1Shot relay | `apps/web/app/api/executions/route.ts` | `ONE_SHOT_LIVE=true`; call `relayer_getCapabilities`, estimate, send with 7710 bundle |
-| Idempotency | `packages/core` `IdempotencyGuard` | Swap in-memory set for Redis / onchain `consumeRequest` first |
-| Proof anchor | `contracts/src/ProofRegistry.sol` | Deploy; call `consumeRequest` + `anchorProof` with real tx hashes |
-| Delegation signing | Not yet wired | Pass granted permission context into `createDelegation` + `signDelegation` from Smart Accounts Kit |
+| Adapters | `packages/adapters/src/` | Venice, x402, 1Shot, ProofRegistry, ERC-7710 signing |
+| Planner | `apps/web/app/api/plan/route.ts` | `VENICE_API_KEY` (Venice risk agent + web search) |
+| Permission grant | `apps/web/lib/metamask.ts` | `NEXT_PUBLIC_SESSION_ACCOUNT`; MetaMask Flask + Smart Account |
+| Redelegation | `apps/web/app/api/delegations/route.ts` | `SESSION_PRIVATE_KEY` + granted `permissionContext` |
+| x402 settlement | `packages/adapters/src/x402.ts` | `X402_LIVE=true` + seller credentials |
+| 1Shot relay | `packages/adapters/src/oneshot.ts` | `ONE_SHOT_LIVE=true`; signed 7710 bundle from dashboard |
+| Webhook | `apps/web/app/api/webhooks/oneshot/route.ts` | `ONE_SHOT_WEBHOOK_SECRET` + `NEXT_PUBLIC_APP_URL` |
+| Proof anchor | `packages/adapters/src/proof.ts` | Deploy registry (`npm run deploy:registry`); set `PROOF_REGISTRY_ADDRESS`, `ANCHOR_PRIVATE_KEY` |
+| Revoke / budget | `apps/web/app/api/revoke`, `budget/` | On-chain disable + caveat enforcer read when session key is set |
+| Idempotency | `packages/core` `IdempotencyGuard` | In-memory for demo; swap for Redis / onchain `consumeRequest` first in production |
 
-**Do not** scatter live/demo branching across the UI. Keep all production wiring in the adapter files above.
+**Do not** scatter live/demo branching across the UI. Keep production wiring in `@r402/adapters` and the API routes above.
 
 ---
 

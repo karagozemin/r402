@@ -19,6 +19,7 @@ type PlanResponse = {
   delegations: DelegationNode[];
   source: string;
   warning?: string;
+  research?: string;
 };
 
 type ExecutionResponse = {
@@ -30,7 +31,9 @@ type ExecutionResponse = {
     capabilitySource: string;
     estimateContext: string;
     status: string;
+    taskId?: string;
   };
+  mode?: "live" | "simulated";
   events: { label: string; detail: string }[];
 };
 
@@ -107,14 +110,18 @@ export function SentinelDashboard() {
   const [replayBlocked, setReplayBlocked] = useState(0);
   const [notice, setNotice] = useState("Demo mode is active. Live adapters are ready for credentials.");
   const [copiedProofKey, setCopiedProofKey] = useState<string | null>(null);
+  const [permissionContext, setPermissionContext] = useState<string | null>(null);
+  const [rootDelegation, setRootDelegation] = useState<unknown>(null);
+  const [signedBundle, setSignedBundle] = useState<Record<string, unknown> | null>(null);
+  const [budgetUSDC, setBudgetUSDC] = useState(20);
   const { toasts, push: pushToast, dismiss: dismissToast } = useToasts();
 
   const noticeTone = noticeToneFor(notice, phase);
 
   const availableBudget = useMemo(() => {
     if (phase === "revoked") return 0;
-    return 20 - (execution?.manifest.paidUSDC ?? 0);
-  }, [execution, phase]);
+    return Math.max(0, budgetUSDC - (execution?.manifest.paidUSDC ?? 0));
+  }, [execution, phase, budgetUSDC]);
 
   async function connectWallet() {
     const ethereum = (window as Window & {
@@ -151,6 +158,10 @@ export function SentinelDashboard() {
       setPlanData(payload);
       setExecution(null);
       setReplayBlocked(0);
+      setSignedBundle(null);
+      setPermissionContext(null);
+      setRootDelegation(null);
+      setBudgetUSDC(20);
       setPhase("planned");
       const noticeText = payload.warning ?? (
         payload.source === "venice-live"
@@ -175,18 +186,56 @@ export function SentinelDashboard() {
   }
 
   async function grantPermission() {
+    if (!planData) return;
     const sessionAccount = process.env.NEXT_PUBLIC_SESSION_ACCOUNT as Address | undefined;
     setBusy(true);
     try {
+      let context: string;
+
       if (sessionAccount) {
         const granted = await requestRootPermission(sessionAccount);
-        setNotice(`Live ERC-7715 permission granted: ${short(granted.context)}`);
+        context = granted.context;
+        setRootDelegation(granted.granted);
+        setNotice(`Live ERC-7715 permission granted: ${short(context)}`);
         pushToast({ tone: "success", title: "Permission granted", message: "Live ERC-7715 root scope is active on Base." });
       } else {
         if (!wallet) setWallet("0x71C2...98A4");
+        context = `0xdemo${Date.now().toString(16).padStart(58, "0")}`;
         setNotice("Demo ERC-7715 permission granted. Add NEXT_PUBLIC_SESSION_ACCOUNT for live mode.");
         pushToast({ tone: "success", title: "Permission granted", message: "Demo root scope unlocked — you can execute the flow." });
       }
+
+      setPermissionContext(context);
+
+      const redelegation = await fetch("/api/delegations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan: planData.plan, permissionContext: context }),
+      });
+      const redelegationPayload = await redelegation.json();
+      if (!redelegation.ok) throw new Error(redelegationPayload.error);
+
+      if (redelegationPayload.bundles?.length) {
+        setSignedBundle({
+          bundles: redelegationPayload.bundles,
+          sessionAccount: redelegationPayload.sessionAccount,
+        });
+      }
+
+      if (redelegationPayload.delegations) {
+        setPlanData({ ...planData, delegations: redelegationPayload.delegations });
+      }
+
+      const budgetResponse = await fetch("/api/budget", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ permissionContext: context }),
+      });
+      const budgetPayload = await budgetResponse.json();
+      if (budgetResponse.ok && typeof budgetPayload.availableUSDC === "number") {
+        setBudgetUSDC(budgetPayload.availableUSDC);
+      }
+
       setPhase("granted");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Permission request failed.";
@@ -212,7 +261,11 @@ export function SentinelDashboard() {
       const response = await fetch("/api/executions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan: planData.plan, delegations: planData.delegations }),
+        body: JSON.stringify({
+          plan: planData.plan,
+          delegations: planData.delegations,
+          signedBundle: signedBundle ?? undefined,
+        }),
       });
       const payload = await response.json();
       if (response.status === 409) {
@@ -229,11 +282,12 @@ export function SentinelDashboard() {
       await new Promise((resolve) => setTimeout(resolve, 650));
       setExecution(payload);
       setPhase("confirmed");
-      setNotice("Execution confirmed and proof manifest anchored.");
+      const modeLabel = payload.mode === "live" ? "live" : "simulated";
+      setNotice(`Execution confirmed (${modeLabel}) and proof manifest anchored.`);
       pushToast({
         tone: "success",
         title: "Execution confirmed",
-        message: `$${payload.manifest.paidUSDC} paid · proof anchored · click artifacts below to copy`,
+        message: `$${payload.manifest.paidUSDC} paid · ${modeLabel} · click artifacts below to copy`,
       });
     } catch (error) {
       setPhase("granted");
@@ -245,10 +299,36 @@ export function SentinelDashboard() {
     }
   }
 
-  function revoke() {
-    setPhase("revoked");
-    setNotice("Root delegation revoked. All child agents are disabled immediately.");
-    pushToast({ tone: "warning", title: "Root revoked", message: "All child agents disabled. Budget set to $0.00." });
+  async function revoke() {
+    setBusy(true);
+    try {
+      const response = await fetch("/api/revoke", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ delegation: rootDelegation ?? { demo: true, permissionContext } }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error);
+
+      setPhase("revoked");
+      setBudgetUSDC(0);
+      const noticeText =
+        payload.mode === "live" && payload.transactionHash
+          ? `Root delegation revoked on-chain: ${short(payload.transactionHash)}`
+          : "Root delegation revoked. All child agents are disabled immediately.";
+      setNotice(noticeText);
+      pushToast({
+        tone: "warning",
+        title: "Root revoked",
+        message: payload.mode === "live" ? "On-chain revoke confirmed." : "All child agents disabled. Budget set to $0.00.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Revoke failed.";
+      setNotice(message);
+      pushToast({ tone: "error", title: "Revoke failed", message });
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleProofClick(key: string, label: string, value?: string) {
@@ -319,7 +399,7 @@ export function SentinelDashboard() {
         <div className="hero-metrics">
           <Metric value={replayBlocked.toString()} label="Replays blocked" tone="orange" />
           <Metric value={`$${availableBudget.toFixed(2)}`} label="Budget left" />
-          <Metric value={phase === "revoked" ? "Off" : "Live"} label="Permission" />
+          <Metric value={phase === "revoked" ? "Off" : permissionContext ? "Live" : "Demo"} label="Permission" />
         </div>
       </section>
 
@@ -392,7 +472,7 @@ export function SentinelDashboard() {
         <article className="panel risk-panel">
           <PanelHeader
             title="Risk check"
-            subtitle={planData?.risk.note ?? "Run the planner first."}
+            subtitle={planData?.research ?? planData?.risk.note ?? "Run the planner first."}
             badge={planData?.risk.verdict ?? "waiting"}
           />
           <div className="risk-score">

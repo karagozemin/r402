@@ -10,9 +10,11 @@
     "dev": "npm run dev -w @r402/web",
     "build": "npm run build -w @r402/web",
     "lint": "npm run lint -w @r402/web",
-    "test": "npm run test -w @r402/core",
+    "test": "npm run test -w @r402/core && npm run test -w @r402/adapters",
     "test:e2e": "playwright test",
-    "test:contracts": "forge test --root contracts"
+    "test:contracts": "forge test --root contracts",
+    "generate:session": "node scripts/generate-session.mjs",
+    "deploy:registry": "forge create --root contracts src/ProofRegistry.sol:ProofRegistry --rpc-url ${BASE_RPC_URL:-https://mainnet.base.org} --private-key ${DEPLOYER_PRIVATE_KEY} --broadcast"
   },
   "devDependencies": {
     "playwright": "^1.60.0"

@@ -9,7 +9,7 @@ try {
 }
 
 const nextConfig: NextConfig = {
-  transpilePackages: ["@r402/core"],
+  transpilePackages: ["@r402/core", "@r402/adapters"],
   experimental: {
     externalDir: true,
   },

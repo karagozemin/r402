@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@metamask/smart-accounts-kit": "^1.6.0",
+    "@r402/adapters": "*",
     "@r402/core": "*",
     "next": "^16.2.9",
     "react": "^19.1.0",

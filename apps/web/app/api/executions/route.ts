@@ -4,8 +4,8 @@ import {
   hashValue,
   IdempotencyGuard,
   planSchema,
-  sanitizeMetadata,
 } from "@r402/core";
+import { runProtectedExecution } from "@r402/adapters";
 import { NextResponse } from "next/server";
 
 const guard = new IdempotencyGuard();
@@ -15,7 +15,8 @@ export async function POST(request: Request) {
   const plan = planSchema.parse(body.plan);
   const planHash = hashValue(plan);
   const delegationHash = hashValue(body.delegations);
-  const quoteHash = hashValue({ chainId: 8453, asset: "USDC", amount: "0.18" });
+  const quoteUSDC = 0.18;
+  const quoteHash = hashValue({ chainId: 8453, asset: "USDC", amount: String(quoteUSDC) });
   const requestDigest = createRequestDigest({
     method: "POST",
     url: plan.x402Resources[0],
@@ -36,29 +37,41 @@ export async function POST(request: Request) {
     );
   }
 
-  const metadata = sanitizeMetadata({
-    query: plan.intent,
-    email: "operator@r402.dev",
-    wallet_label: "primary",
-  });
+  try {
+    const result = await runProtectedExecution({
+      plan,
+      delegations: body.delegations,
+      signedBundle: body.signedBundle,
+      quoteUSDC,
+    });
 
-  return NextResponse.json({
-    manifest: buildProofManifest(plan, body.delegations),
-    metadata,
-    relay: {
-      provider: "1Shot permissionless relayer",
-      network: "Base",
-      capabilitySource: "relayer_getCapabilities",
-      estimateContext: "price-locked",
-      status: "confirmed",
-    },
-    events: [
-      { label: "402 challenge received", detail: "Payment required: 0.18 USDC" },
-      { label: "Request digest locked", detail: requestDigest },
-      { label: "PII metadata removed", detail: metadata.removed.join(", ") },
-      { label: "Paid request accepted", detail: "HTTP 200 + PAYMENT-RESPONSE" },
-      { label: "1Shot relay confirmed", detail: "7702 / 7710 execution bundle" },
-      { label: "Proof anchored", detail: "ProofRegistry emitted ProofAnchored" },
-    ],
-  });
+    return NextResponse.json({
+      manifest: result.manifest,
+      metadata: result.metadata ?? {
+        clean: { query: plan.intent },
+        removed: ["email", "wallet_label"],
+      },
+      relay: {
+        provider: "1Shot permissionless relayer",
+        network: "Base",
+        capabilitySource: "relayer_getCapabilities",
+        estimateContext: result.relay.mode === "live" ? "price-locked" : "simulated",
+        status: result.relay.status ?? "confirmed",
+        taskId: "taskId" in result.relay ? result.relay.taskId : undefined,
+        targetAddress:
+          "capabilities" in result.relay ? result.relay.capabilities.targetAddress : undefined,
+      },
+      anchor: result.anchor,
+      mode: result.mode,
+      events: result.events,
+    });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error: error instanceof Error ? error.message : "Execution failed.",
+        manifest: buildProofManifest(plan, body.delegations),
+      },
+      { status: 500 },
+    );
+  }
 }

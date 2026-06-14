@@ -75,6 +75,7 @@ r402/
 │   ├── components/            SentinelDashboard UI
 │   └── lib/metamask.ts        Live ERC-7715 permission request
 ├── packages/core/             Policy, hashing, delegation tree, idempotency
+├── packages/adapters/         Live Venice, x402, 1Shot, ProofRegistry, ERC-7710
 ├── contracts/                 ProofRegistry.sol (Foundry)
 ├── docs/
 │   ├── architecture.md        System design (start here for internals)
@@ -108,9 +109,17 @@ Root `.env.local` is loaded automatically by the web app (`apps/web/next.config.
 | `VENICE_MODEL` | No | Default: `venice-uncensored-1-2` |
 | `GROQ_API_KEY` | No | Free fallback if Venice is unavailable |
 | `GROQ_MODEL` | No | Default: `openai/gpt-oss-20b` |
-| `NEXT_PUBLIC_SESSION_ACCOUNT` | No | Session account address for live ERC-7715 grant prompt |
-| `ONE_SHOT_LIVE` | No | Reserved for live 1Shot relay adapter |
+| `NEXT_PUBLIC_SESSION_ACCOUNT` | No | Session smart account for live ERC-7715 grant |
+| `SESSION_PRIVATE_KEY` | No | Session owner key for ERC-7710 redelegation signing |
+| `X402_LIVE` | No | Enable live x402 payment attempts (`true` / `false`) |
+| `ONE_SHOT_LIVE` | No | Enable live 1Shot relay estimate + send |
 | `ONE_SHOT_RELAYER_URL` | No | Default: `https://relayer.1shotapi.com/relayers` |
+| `ONE_SHOT_WEBHOOK_SECRET` | No | HMAC secret for `/api/webhooks/oneshot` |
+| `PROOF_REGISTRY_ADDRESS` | No | Deployed `ProofRegistry` on Base |
+| `ANCHOR_PRIVATE_KEY` | No | Key that calls `consumeRequest` + `anchorProof` |
+| `DEPLOYER_PRIVATE_KEY` | No | One-time deploy key for `npm run deploy:registry` |
+| `BASE_RPC_URL` | No | Default: `https://mainnet.base.org` |
+| `NEXT_PUBLIC_APP_URL` | No | Public app URL for 1Shot webhook callbacks |
 | `NEXT_PUBLIC_BASE_EXPLORER` | No | Default: `https://basescan.org` |
 
 **Planner fallback chain:** Venice live → Groq live → deterministic demo plan.
@@ -118,9 +127,32 @@ Root `.env.local` is loaded automatically by the web app (`apps/web/next.config.
 **Permission modes:**
 
 - **Demo** (default): simulated ERC-7715 grant, simulated relay, deterministic proof artifacts.
-- **Live grant**: set `NEXT_PUBLIC_SESSION_ACCOUNT` to your session smart account address. Connect MetaMask on Base, grant the periodic USDC permission. Requires MetaMask Flask with Smart Account upgrade.
+- **Live grant**: set `NEXT_PUBLIC_SESSION_ACCOUNT` + `SESSION_PRIVATE_KEY`. Connect MetaMask Flask on Base and grant periodic USDC.
+- **Live execution**: set `X402_LIVE`, `ONE_SHOT_LIVE`, `PROOF_REGISTRY_ADDRESS`, `ANCHOR_PRIVATE_KEY`. Deploy registry with `npm run deploy:registry`.
 
 Copy `.env.example` to `.env.local` and fill in what you need.
+
+---
+
+## Hackathon readiness
+
+| Track / requirement | Status |
+| --- | --- |
+| Venice planner + risk agent + web search | ✅ Wired (`@r402/adapters`) |
+| ERC-7715 root permission (MetaMask) | ✅ `lib/metamask.ts` + dashboard grant |
+| ERC-7710 redelegation tree | ✅ `/api/delegations` + session signing |
+| x402 request binding + PII filter | ✅ `@r402/core` + `@r402/adapters/x402` |
+| 1Shot relay (capabilities → estimate → send) | ✅ `@r402/adapters/oneshot` |
+| 1Shot webhook HMAC verify | ✅ `/api/webhooks/oneshot` |
+| ProofRegistry contract + tests | ✅ Foundry 3/3 |
+| On-chain anchor adapter | ✅ `proof.ts` (needs deploy + env) |
+| Replay block + revoke | ✅ IdempotencyGuard + `/api/revoke` |
+| Dashboard end-to-end demo | ✅ Plan → grant → execute → replay → revoke |
+| Unit tests + build + lint | ✅ `npm test`, `npm run build`, `npm run lint` |
+| Architecture + threat model + demo storyboard | ✅ `docs/` |
+| E2E spec | ✅ Playwright spec (install browsers to run) |
+
+**Live demo recording:** set env vars from [demo storyboard](docs/demo-storyboard.md), deploy registry once, record with MetaMask Flask on Base.
 
 ---
 
@@ -181,17 +213,21 @@ Full threat model: **[docs/threat-model.md](docs/threat-model.md)**
 
 ## Live integration boundaries
 
-These files are the adapter seams. Wire live credentials and onchain context here without rewriting the dashboard:
+Live adapters live in `@r402/adapters` and are consumed by the API routes:
 
 | Boundary | File | Responsibility |
 | --- | --- | --- |
+| Adapters | `packages/adapters/src/` | Venice, x402, 1Shot, ProofRegistry, ERC-7710 |
 | Planner | `apps/web/app/api/plan/route.ts` | Venice / Groq → constrained `ExecutionPlan` |
+| Redelegation | `apps/web/app/api/delegations/route.ts` | Signed ERC-7710 child bundles |
 | Execution | `apps/web/app/api/executions/route.ts` | Digest lock, x402, relay, proof manifest |
+| Revoke / budget | `apps/web/app/api/revoke`, `budget/` | On-chain disable + caveat budget read |
+| Webhook | `apps/web/app/api/webhooks/oneshot/` | 1Shot HMAC verification |
 | Policy & crypto | `packages/core/src/index.ts` | Hashing, risk, delegation tree, PII filter |
 | Permissions | `apps/web/lib/metamask.ts` | Live ERC-7715 periodic USDC grant |
 | Onchain proof | `contracts/src/ProofRegistry.sol` | One-time digest consumption + proof anchor |
 
-Before production submission: wire the granted permission context, signed 7710 bundle, live 1Shot task, and deployed `ProofRegistry` address into these boundaries.
+Demo storyboard for the submission video: **[docs/demo-storyboard.md](docs/demo-storyboard.md)**.
 
 ---
 

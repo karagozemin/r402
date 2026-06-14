@@ -7,6 +7,7 @@ import {
   parseUnits,
   type Address,
   type EIP1193Provider,
+  type Hex,
 } from "viem";
 import { base } from "viem/chains";
 
@@ -40,5 +41,11 @@ export async function requestRootPermission(sessionAccount: Address) {
   ]);
 
   if (!granted) throw new Error("MetaMask did not return a permission context.");
-  return granted;
+
+  const context =
+    typeof granted === "object" && granted !== null && "context" in granted
+      ? (granted as { context: Hex }).context
+      : (granted as Hex);
+
+  return { context, granted };
 }
