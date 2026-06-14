@@ -196,6 +196,8 @@ export function SentinelDashboard() {
         const granted = await requestRootPermission(sessionAccount);
         context = granted.context;
         setRootDelegation(granted.granted);
+        setPermissionContext(context);
+        setPhase("granted");
         setNotice(`Live ERC-7715 permission granted: ${short(context)}`);
         pushToast({ tone: "success", title: "Permission granted", message: "Live ERC-7715 root scope is active on Base." });
       } else {
@@ -203,40 +205,56 @@ export function SentinelDashboard() {
         context = `0xdemo${Date.now().toString(16).padStart(58, "0")}`;
         setNotice("Demo ERC-7715 permission granted. Add NEXT_PUBLIC_SESSION_ACCOUNT for live mode.");
         pushToast({ tone: "success", title: "Permission granted", message: "Demo root scope unlocked — you can execute the flow." });
+        setPermissionContext(context);
+        setPhase("granted");
       }
 
-      setPermissionContext(context);
+      try {
+        const redelegation = await fetch("/api/delegations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ plan: planData.plan, permissionContext: context }),
+        });
+        const redelegationPayload = await redelegation.json();
+        if (!redelegation.ok) throw new Error(redelegationPayload.error);
 
-      const redelegation = await fetch("/api/delegations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan: planData.plan, permissionContext: context }),
-      });
-      const redelegationPayload = await redelegation.json();
-      if (!redelegation.ok) throw new Error(redelegationPayload.error);
+        if (redelegationPayload.bundles?.length) {
+          setSignedBundle({
+            bundles: redelegationPayload.bundles,
+            sessionAccount: redelegationPayload.sessionAccount,
+          });
+        }
 
-      if (redelegationPayload.bundles?.length) {
-        setSignedBundle({
-          bundles: redelegationPayload.bundles,
-          sessionAccount: redelegationPayload.sessionAccount,
+        if (redelegationPayload.delegations) {
+          setPlanData({ ...planData, delegations: redelegationPayload.delegations });
+        }
+
+        if (redelegationPayload.mode === "simulated" && redelegationPayload.message) {
+          pushToast({ tone: "info", title: "Redelegation simulated", message: redelegationPayload.message });
+        }
+      } catch (redelegationError) {
+        const message =
+          redelegationError instanceof Error ? redelegationError.message : "Redelegation failed.";
+        pushToast({
+          tone: "warning",
+          title: "Redelegation skipped",
+          message: `${message} You can still run the demo execute flow.`,
         });
       }
 
-      if (redelegationPayload.delegations) {
-        setPlanData({ ...planData, delegations: redelegationPayload.delegations });
+      try {
+        const budgetResponse = await fetch("/api/budget", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ permissionContext: context }),
+        });
+        const budgetPayload = await budgetResponse.json();
+        if (budgetResponse.ok && typeof budgetPayload.availableUSDC === "number") {
+          setBudgetUSDC(budgetPayload.availableUSDC);
+        }
+      } catch {
+        // Budget read is best-effort; grant still succeeded.
       }
-
-      const budgetResponse = await fetch("/api/budget", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ permissionContext: context }),
-      });
-      const budgetPayload = await budgetResponse.json();
-      if (budgetResponse.ok && typeof budgetPayload.availableUSDC === "number") {
-        setBudgetUSDC(budgetPayload.availableUSDC);
-      }
-
-      setPhase("granted");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Permission request failed.";
       setNotice(message);

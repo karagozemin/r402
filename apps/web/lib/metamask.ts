@@ -13,6 +13,10 @@ import { base } from "viem/chains";
 
 const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 
+function isBlankContext(context: Hex) {
+  return context.replace(/^0x/i, "").replace(/0/g, "").length === 0;
+}
+
 export async function requestRootPermission(sessionAccount: Address) {
   const provider = (window as Window & { ethereum?: EIP1193Provider }).ethereum;
   if (!provider) throw new Error("MetaMask is required for a live ERC-7715 permission.");
@@ -42,10 +46,30 @@ export async function requestRootPermission(sessionAccount: Address) {
 
   if (!granted) throw new Error("MetaMask did not return a permission context.");
 
-  const context =
+  let context =
     typeof granted === "object" && granted !== null && "context" in granted
-      ? (granted as { context: Hex }).context
+      ? (granted.context as Hex)
       : (granted as Hex);
+
+  if (isBlankContext(context)) {
+    try {
+      const active = await walletClient.getGrantedExecutionPermissions();
+      const match =
+        active.find((entry) => entry.to?.toLowerCase() === sessionAccount.toLowerCase()) ??
+        active.at(-1);
+      if (match?.context && !isBlankContext(match.context)) {
+        context = match.context;
+      }
+    } catch {
+      // Fall back to the initial response if MetaMask does not expose active permissions yet.
+    }
+  }
+
+  if (isBlankContext(context)) {
+    throw new Error(
+      "MetaMask returned an empty permission context. Use MetaMask Flask 13.5+, upgrade to a Smart Account on Base, and grant to the session address in NEXT_PUBLIC_SESSION_ACCOUNT.",
+    );
+  }
 
   return { context, granted };
 }
