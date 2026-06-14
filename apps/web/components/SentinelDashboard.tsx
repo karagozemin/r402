@@ -72,8 +72,11 @@ const liveGrantEnabled = Boolean(process.env.NEXT_PUBLIC_SESSION_ACCOUNT);
 const liveExecutionEnabled = envFlag(process.env.NEXT_PUBLIC_ONE_SHOT_LIVE);
 const isLiveMode = liveGrantEnabled && liveExecutionEnabled;
 
+const liveFlaskPrereqMessage =
+  "Connect with the latest MetaMask Flask on Base and upgrade to a Smart Account before Grant (minimum 13.9+; current releases are 13.34+). Regular MetaMask cannot issue ERC-7715 permissions. If Flask and regular MetaMask are both installed, disable one extension.";
+
 const liveUsdcPrereqMessage =
-  "Keep ~$0.02+ USDC on Base in your connected MetaMask Smart Account before Execute (~$0.01 relayer fee + ~$0.01 work transfer). Both legs are USDC transfers required by periodic ERC-7715 permissions — not ETH.";
+  "Keep ~$0.02+ USDC on Base in your connected Smart Account before Execute (~$0.01 relayer fee + ~$0.01 work transfer). Grant only sets limits — it does not add balance.";
 
 function proofScanUrl(key: string, value: string, execution?: ExecutionResponse | null) {
   if (key === "pii") return null;
@@ -161,7 +164,7 @@ export function SentinelDashboard() {
   const [replayBlocked, setReplayBlocked] = useState(0);
   const [notice, setNotice] = useState(
     isLiveMode
-      ? `Live mode active. ${liveUsdcPrereqMessage}`
+      ? "Live mode active. Use the latest MetaMask Flask on Base with a Smart Account, then keep ~$0.02 USDC before Execute."
       : "Demo mode is active. Live adapters are ready for credentials.",
   );
   const [copiedProofKey, setCopiedProofKey] = useState<string | null>(null);
@@ -576,17 +579,30 @@ export function SentinelDashboard() {
         <div className="live-prereq-banner" role="status">
           <DotIcon kind="spark" />
           <div className="live-prereq-copy">
-            <strong>Live mode checklist · USDC on Base</strong>
-            <p>{liveUsdcPrereqMessage}</p>
+            <strong>Live mode checklist</strong>
+            <ul className="live-prereq-list">
+              <li>{liveFlaskPrereqMessage}</li>
+              <li>{liveUsdcPrereqMessage}</li>
+            </ul>
           </div>
-          <a
-            className="live-prereq-link"
-            href="https://bridge.base.org"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Bridge to Base
-          </a>
+          <div className="live-prereq-actions">
+            <a
+              className="live-prereq-link"
+              href="https://metamask.io/flask"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Get Flask
+            </a>
+            <a
+              className="live-prereq-link"
+              href="https://bridge.base.org"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Bridge USDC
+            </a>
+          </div>
         </div>
       ) : null}
 
@@ -615,7 +631,7 @@ export function SentinelDashboard() {
         <article className="panel permission-panel">
           <PanelHeader
             title="Permission"
-            subtitle="Grant a bounded USDC budget on Base."
+            subtitle={isLiveMode ? "Grant via MetaMask Flask on Base." : "Grant a bounded USDC budget on Base."}
             badge="7715"
           />
           <div className="budget-card">

@@ -14,15 +14,17 @@ This document is the authoritative system design reference. For threat controls,
 4. [Monorepo components](#monorepo-components)
 5. [Execution plan & policy](#execution-plan--policy)
 6. [Permission model](#permission-model)
-7. [Cryptographic binding](#cryptographic-binding)
-8. [Planning pipeline](#planning-pipeline)
-9. [Execution pipeline](#execution-pipeline)
-10. [Proof manifest](#proof-manifest)
-11. [API reference](#api-reference)
-12. [Onchain contracts](#onchain-contracts)
-13. [Dashboard phases](#dashboard-phases)
-14. [Live integration boundaries](#live-integration-boundaries)
-15. [Extension points](#extension-points)
+7. [1Shot relay bundle](#1shot-relay-bundle)
+8. [Cryptographic binding](#cryptographic-binding)
+9. [Planning pipeline](#planning-pipeline)
+10. [Execution pipeline](#execution-pipeline)
+11. [Proof manifest](#proof-manifest)
+12. [API reference](#api-reference)
+13. [Onchain contracts](#onchain-contracts)
+14. [Dashboard phases](#dashboard-phases)
+15. [Live vs demo modes](#live-vs-demo-modes)
+16. [Live integration boundaries](#live-integration-boundaries)
+17. [Extension points](#extension-points)
 
 ---
 
@@ -38,15 +40,15 @@ A payment is not "for research." It is for **this** HTTP method, **this** canoni
 
 ### 3. Fail closed
 
-Unknown sellers, replayed digests, revoked root permissions, stale relay estimates, and policy violations halt execution before funds move. The system defaults to *stop*, not *continue*.
+Unknown sellers, replayed digests, revoked root permissions, stale relay estimates, blank permission contexts, and policy violations halt execution before funds move. The system defaults to *stop*, not *continue*.
 
 ### 4. Proof over promises
 
-Every successful run produces a `ProofManifest`: deterministic hashes linking plan, delegation, request, relay task, transaction, and final proof. Simulated artifacts in demo mode use the same schema as live mode.
+Every successful run produces a `ProofManifest`: hashes linking plan, delegation, request, relay task, and on-chain transactions where available. Demo mode uses the same schema; live mode populates real relay and registry txs. BaseScan links appear only for verified on-chain hashes.
 
 ### 5. Adapter seams
 
-Demo and production share one UI and one core library. Live Venice inference, MetaMask permissions, x402 settlement, 1Shot relay, and onchain anchoring plug into explicit adapter boundaries — not scattered conditionals.
+Demo and production share one UI and one core library. Live Venice inference, MetaMask permissions, x402 settlement, 1Shot relay, and onchain anchoring plug into `@r402/adapters` — not scattered conditionals in the UI.
 
 ---
 
@@ -57,27 +59,29 @@ flowchart TB
   User([User])
   Dashboard[Sentinel Dashboard<br/>apps/web]
   PlannerAPI["/api/plan"]
+  DelegAPI["/api/delegations"]
   ExecAPI["/api/executions"]
   Core["@r402/core<br/>policy · hash · tree"]
-  MM[MetaMask Flask<br/>ERC-7715 / 7710]
+  MM[MetaMask Flask<br/>ERC-7715]
   Venice[Venice AI]
   Groq[Groq fallback]
   X402[x402 seller]
-  OneShot[1Shot relayer]
+  OneShot[1Shot relayer<br/>Base]
   Registry[ProofRegistry<br/>Base]
 
   User --> Dashboard
   Dashboard --> PlannerAPI
+  Dashboard --> DelegAPI
   Dashboard --> ExecAPI
   Dashboard --> MM
   PlannerAPI --> Core
   PlannerAPI --> Venice
   PlannerAPI --> Groq
+  DelegAPI --> Core
   ExecAPI --> Core
   ExecAPI --> X402
   ExecAPI --> OneShot
   ExecAPI --> Registry
-  MM --> Registry
 ```
 
 **Trust boundaries:**
@@ -86,8 +90,9 @@ flowchart TB
 | --- | --- | --- |
 | User → Sentinel | Own wallet, own intent | Unbounded agent scope |
 | Planner → Core | JSON schema validation | Raw LLM output without constraint |
+| Grant → 1Shot | `targetAddress` from capabilities | Session account as grant recipient |
 | Execution → x402 | Signed quote for bound URL | Detached or replayed requests |
-| Relay → 1Shot | Capability-derived targets | Hardcoded contract addresses |
+| Relay → 1Shot | Estimate `context` within ~45s | Stale fee quotes |
 | Proof → Registry | One-time digest consumption | Duplicate proof claims |
 
 ---
@@ -106,15 +111,12 @@ flowchart TB
        ▼
 ┌─────────────────────┐
 │ ERC-7715 root       │  periodic USDC · $20 / 24h · Base
-│ permission grant    │  MetaMask Smart Account → session account
+│ permission grant    │  MetaMask Flask → 1Shot relayer targetAddress
 └──────┬──────────────┘
        ▼
 ┌─────────────────────┐
-│ Session Orchestrator│  builds ERC-7710 delegation tree
-│                     │
-│  ├─ Payment Guard   │  x402 seller · ≤ $2 · 10 min TTL
-│  ├─ Execution Agent │  1Shot target · ≤ $5 · selector scope
-│  └─ Proof Agent     │  read-only · ProofRegistry anchor · $0
+│ Policy tree         │  Payment / Execution / Proof scopes (UI + plan binding)
+│ (7710 when enabled) │  When ONE_SHOT_LIVE: grant is direct; tree is informational
 └──────┬──────────────┘
        ▼
 ┌─────────────────────┐
@@ -124,6 +126,7 @@ flowchart TB
        ▼
 ┌─────────────────────┐
 │ Idempotency lock    │  reject duplicate digest (409 REPLAY_BLOCKED)
+│                     │  released on execution failure (500) for retry
 └──────┬──────────────┘
        ▼
 ┌─────────────────────┐
@@ -132,8 +135,8 @@ flowchart TB
 └──────┬──────────────┘
        ▼
 ┌─────────────────────┐
-│ 1Shot relay         │  getCapabilities → estimate → send
-│                     │  7702 / 7710 execution bundle
+│ 1Shot relay         │  getCapabilities → getFeeData → estimate → send
+│                     │  two USDC transfer legs (fee + work)
 └──────┬──────────────┘
        ▼
 ┌─────────────────────┐
@@ -141,7 +144,7 @@ flowchart TB
 └──────┬──────────────┘
        ▼
 ┌─────────────────────┐
-│ Revoke root         │  disable all child agents immediately
+│ Revoke root         │  MetaMask wallet_revokeExecutionPermission (live)
 └─────────────────────┘
 ```
 
@@ -153,13 +156,14 @@ flowchart TB
 
 | Path | Role |
 | --- | --- |
-| `components/SentinelDashboard.tsx` | Six-phase UX: intent → plan → grant → execute → proof → revoke |
+| `components/SentinelDashboard.tsx` | Six-step UX: Plan → Grant → Permit → Pay → Relay → Proof → Revoke |
 | `app/api/plan/route.ts` | Planner adapter (Venice → Groq → deterministic) |
-| `app/api/executions/route.ts` | Execution adapter (digest, idempotency, manifest) |
-| `lib/metamask.ts` | Live ERC-7715 `requestExecutionPermissions` on Base USDC |
-| `app/layout.tsx` | App shell, metadata, favicon from root `r402.png` |
-
-The web app loads root `.env.local` via `next.config.ts`. `experimental.externalDir` allows importing assets from the monorepo root.
+| `app/api/delegations/route.ts` | ERC-7710 signing or policy tree when `ONE_SHOT_LIVE` |
+| `app/api/executions/route.ts` | Digest lock, x402, 1Shot, proof manifest |
+| `app/api/budget/route.ts` | ERC-20 period transfer enforcer available amount |
+| `app/api/revoke/route.ts` | Demo revoke or server-side simulated disable |
+| `lib/metamask.ts` | Live ERC-7715 `requestExecutionPermissions` on Base |
+| `next.config.ts` | Loads root `.env.local`; exposes `ONE_SHOT_LIVE` / `X402_LIVE` to client |
 
 ### `packages/core` — Shared logic
 
@@ -172,9 +176,20 @@ Pure TypeScript. No I/O. Used by API routes and unit tests.
 | `createRequestDigest` | Bind HTTP request to authorization context |
 | `assessPlan` | Risk score, verdict, findings |
 | `buildDelegationTree` | Narrow ERC-7710 child scopes from plan |
-| `buildProofManifest` | Deterministic proof artifact bundle |
+| `buildProofManifest` | Proof artifact bundle (no synthetic tx hashes) |
 | `sanitizeMetadata` | PII strip before x402 payment |
-| `IdempotencyGuard` | In-memory replay protection (swap for Redis in prod) |
+| `IdempotencyGuard` | In-memory replay protection (`release` on failed execute) |
+
+### `packages/adapters` — Live integrations
+
+| Module | Purpose |
+| --- | --- |
+| `oneshot.ts` | 1Shot JSON-RPC: capabilities, fee, estimate, send |
+| `x402.ts` | x402 paid request flow |
+| `proof.ts` | ProofRegistry consume + anchor |
+| `delegation.ts` | ERC-7710 redelegation signing, budget read, revoke guard |
+| `execution.ts` | Orchestrates x402 + 1Shot + proof for `/api/executions` |
+| `env.ts` | Central env flags (`oneShotLive`, `x402Live`, etc.) |
 
 ### `contracts` — Onchain proof
 
@@ -204,135 +219,139 @@ Foundry tests cover consume-once semantics and anchor storage.
 }
 ```
 
-Validated by `planSchema` in `packages/core/src/types.ts`.
-
 ### Planner constraints
 
-Even when Venice or Groq returns a plan, `constrainPlan()` in the plan route enforces:
+Even when Venice or Groq returns a plan, `constrainPlan()` enforces:
 
 - `chainId` locked to 8453
 - `maxBudgetUSDC` capped at 8 for autonomous execution
-- `x402Resources` filtered to server-side allowlist
-- `allowedTargets` filtered to server-side allowlist
+- `x402Resources` and `allowedTargets` filtered to server-side allowlists
 - `requiredFunctions` filtered to known selectors
-
-This prevents the LLM from expanding authority beyond policy.
 
 ### Risk assessment
 
-`assessPlan()` produces:
+`assessPlan()` produces score (0–92), verdict (`allow` · `review` · `block`), findings, and active controls.
 
-| Field | Meaning |
-| --- | --- |
-| `score` | 0–92 composite risk |
-| `verdict` | `allow` · `review` · `block` |
-| `findings` | Policy violations or clean bill |
-| `controls` | Active safeguards (digest binding, idempotency, caveats, PII filter) |
-
-Triggers include unknown x402 sellers and budgets above recommended autonomous limits.
+**Source values:** `venice-live` · `groq-live` · `deterministic-fallback`
 
 ---
 
 ## Permission model
 
-Sentinel implements a three-tier delegation tree derived from the approved plan.
+### Policy tree (UI + binding)
 
 ```text
 Session Orchestrator (root)
-│  ERC-7715 periodic USDC
-│  limit: min(plan.maxBudgetUSDC, 20)
-│  TTL: 24 hours
+│  ERC-7715 periodic USDC · $20 / 24h · Base
 │
-├── Payment Guard
-│     role: x402 paid request
-│     limit: min(2, root)
-│     targets: plan.x402Resources
-│     TTL: 10 minutes
-│
-├── Execution Agent
-│     role: 1Shot relay
-│     limit: min(5, root)
-│     targets: plan.allowedTargets (first 2)
-│     TTL: 10 minutes
-│
-└── Proof Agent
-      role: read + anchor only
-      limit: 0 USDC
-      targets: ProofRegistry
-      TTL: 30 minutes
+├── Payment Guard     · x402 · ≤ $2 · 10 min
+├── Execution Agent   · 1Shot · ≤ $5 · 10 min
+└── Proof Agent       · ProofRegistry · read/anchor · $0
 ```
 
-**Invariant:** `child.limitUSDC ≤ parent.limitUSDC` for every node. Verified in unit tests.
+**Invariant:** `child.limitUSDC ≤ parent.limitUSDC` for every node.
 
 ### ERC-7715 root grant (live mode)
 
-`apps/web/lib/metamask.ts` requests:
+`apps/web/lib/metamask.ts` requests periodic USDC permission with:
 
 ```typescript
 requestExecutionPermissions([{
   chainId: base.id,
+  from: grantor,                    // user's connected Smart Account
   expiry: now + 24h,
-  to: sessionAccount,           // NEXT_PUBLIC_SESSION_ACCOUNT
+  to: grantTarget,                  // 1Shot relayer targetAddress — NOT session account
   permission: {
     type: "erc20-token-periodic",
+    isAdjustmentAllowed: true,
     data: {
-      tokenAddress: BASE_USDC,  // 0x833589…2913
-      periodAmount: 20 USDC,
+      tokenAddress: BASE_USDC,       // 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+      periodAmount: parseUnits("20", 6),
       periodDuration: 86400,
+      justification: "Proof-bound daily budget for r402 Sentinel",
     },
   },
 }])
 ```
 
-The **session account** is the agent identity that receives the permission — not the user's connected EOA. The user grants; the session account redeems.
+`grantTarget` is fetched from `relayer_getCapabilities` for chain `8453`. The 1Shot relayer must be the **delegate** (`to`) or it cannot redeem the delegation.
 
-Requirements for live grant:
+### Session orchestrator role
 
-- MetaMask Flask 13.5+
-- User upgraded to MetaMask Smart Account on Base
-- `NEXT_PUBLIC_SESSION_ACCOUNT` set to session smart account address
+`NEXT_PUBLIC_SESSION_ACCOUNT` is the **agent identity** for:
+
+- ERC-7710 redelegation signing (when `ONE_SHOT_LIVE` is false and session key is set)
+- **Work-transfer recipient** in the live 1Shot bundle (second USDC leg)
+
+It is **not** the ERC-7715 grant recipient in the current live integration.
+
+### ERC-7710 redelegation
+
+When `ONE_SHOT_LIVE=true`, `/api/delegations` returns the policy tree only (`bundles: []`) — the root grant already delegates to 1Shot. Child scopes are enforced via the proof-bound plan and execution adapter.
+
+When `ONE_SHOT_LIVE=false` and `SESSION_PRIVATE_KEY` is set, the session account signs Payment / Execution / Proof / Relay child delegations.
+
+### Live grant requirements
+
+| Requirement | Reason |
+| --- | --- |
+| MetaMask Flask ≥ 13.9 (current ~13.34+) | `erc20-token-periodic` + ERC-7715 provider actions |
+| Smart Account upgraded on **Base** | Plain EOA returns empty `0x000…` context |
+| Only one MetaMask extension active | Flask + regular MetaMask causes RPC conflicts |
+| USDC in Smart Account before Execute | Relayer fee + work leg paid in USDC, not ETH |
+
+---
+
+## 1Shot relay bundle
+
+Live relay (`packages/adapters/src/oneshot.ts`) follows the [1Shot public relayer](https://github.com/1Shot-API/skills/blob/main/public-relayer/SKILL.md) shape:
+
+```json
+{
+  "chainId": "8453",
+  "destinationUrl": "https://your-app/api/webhooks/oneshot",
+  "transactions": [{
+    "permissionContext": [/* decoded delegations from MetaMask grant */],
+    "executions": [
+      { "target": "USDC", "data": "transfer(feeCollector, feeAmount)" },
+      { "target": "USDC", "data": "transfer(sessionAccount, workAmount)" }
+    ]
+  }],
+  "context": "/* from relayer_estimate7710Transaction */"
+}
+```
+
+**Periodic permission constraint:** `ERC20PeriodTransferEnforcer` requires each execution to be a valid ERC-20 `transfer` (68-byte calldata). A noop or non-transfer second leg reverts with `invalid-execution-length`.
+
+| Leg | Amount | Recipient |
+| --- | --- | --- |
+| Fee | ~$0.01 USDC (from estimate) | 1Shot `feeCollector` |
+| Work | $0.01 USDC | `NEXT_PUBLIC_SESSION_ACCOUNT` (fallback: delegator) |
+
+Flow: `relayer_getCapabilities` → validate grant `to` === `targetAddress` → `relayer_getFeeData` → `relayer_estimate7710Transaction` → `relayer_send7710Transaction` with price-locked `context`.
+
+Preflight: delegator USDC balance ≥ fee + work before estimate.
 
 ---
 
 ## Cryptographic binding
 
-### Canonical hashing
-
-`hashValue()` serializes objects with sorted keys before keccak256. Identical semantic content → identical hash regardless of key order.
-
 ### Request digest
 
 ```typescript
 requestDigest = hash({
-  method: "POST",                    // uppercased
+  method: "POST",
   url: plan.x402Resources[0],
   bodyHash: hash(body),
-  quoteHash: hash({ chainId, asset, amount }),
+  quoteHash: hash({ chainId: 8453, asset: "USDC", amount }),
   planHash: hash(plan),
   delegationHash: hash(delegations),
 })
 ```
 
-**Why each field matters:**
-
-| Field | Prevents |
-| --- | --- |
-| `method` | GET/POST substitution |
-| `url` | Cross-resource payment routing |
-| `bodyHash` | Payload tampering after quote |
-| `quoteHash` | Stale or swapped price acceptance |
-| `planHash` | Execution outside approved scope |
-| `delegationHash` | Permission context substitution |
-
 ### Idempotency
 
-`IdempotencyGuard` (in-memory in demo; replace with durable store in production) rejects a digest that was already consumed. The executions route returns:
-
-```json
-{ "error": "Duplicate x402 request blocked", "code": "REPLAY_BLOCKED", "requestDigest": "0x…" }
-```
-
-HTTP **409**. Matches onchain `ProofRegistry.consumeRequest` semantics.
+`IdempotencyGuard.consume(digest)` runs before execution. Duplicate digests return **409** `REPLAY_BLOCKED`. On execution **500**, `guard.release(digest)` allows retry after fixing the error (e.g. insufficient USDC).
 
 ---
 
@@ -350,21 +369,17 @@ sequenceDiagram
   alt VENICE_API_KEY set
     API->>V: chat/completions (JSON mode)
     V-->>API: ExecutionPlan JSON
-  else Venice fails + GROQ_API_KEY set
-    API->>G: chat/completions (json_schema)
+  else Venice fails + GROQ_API_KEY
+    API->>G: chat/completions
     G-->>API: ExecutionPlan JSON
-  else No keys / all failed
-    API->>API: demoPlan(intent)
+  else
+    API->>API: deterministic demoPlan
   end
   API->>API: constrainPlan()
   API->>C: assessPlan(plan)
-  API->>C: buildDelegationTree(plan, salt)
+  API->>C: buildDelegationTree(plan)
   API-->>UI: { plan, risk, delegations, source }
 ```
-
-**Planner system prompt** instructs the model to return strict JSON only, never expand authority, and never claim research has already occurred.
-
-**Source values:** `venice-live` · `groq-live` · `deterministic-fallback`
 
 ---
 
@@ -375,49 +390,48 @@ sequenceDiagram
   participant UI as Dashboard
   participant API as /api/executions
   participant C as @r402/core
-  participant X as x402 seller
+  participant A as @r402/adapters
+  participant X as x402
   participant R as 1Shot
   participant P as ProofRegistry
 
-  UI->>API: POST { plan, delegations }
+  UI->>API: POST { plan, delegations, permissionContext }
   API->>C: createRequestDigest(...)
   API->>C: IdempotencyGuard.consume(digest)
-  alt digest already consumed
+  alt digest consumed
     API-->>UI: 409 REPLAY_BLOCKED
   end
-  API->>C: sanitizeMetadata(...)
-  Note over API,X: Demo: simulated events<br/>Live: real 402 → pay → 200
-  Note over API,R: Demo: simulated relay<br/>Live: capabilities → estimate → send
-  API->>C: buildProofManifest(plan, delegations)
-  Note over API,P: Demo: deterministic hashes<br/>Live: consumeRequest + anchorProof
-  API-->>UI: { manifest, metadata, relay, events }
+  API->>A: runProtectedExecution(...)
+  A->>X: runX402Payment
+  alt ONE_SHOT_LIVE
+    A->>R: estimate → send7710
+  else demo
+    A->>A: simulated relay
+  end
+  A->>P: consumeRequest + anchorProof
+  API-->>UI: { manifest, relay, anchor, events, mode }
+  Note over API: On 500: release digest
 ```
-
-### PII sanitization
-
-Before x402 payment, metadata passes through `sanitizeMetadata()`. Keys matching `/email|phone|name|address|wallet|secret|token|password/i` are removed. The response includes both `clean` payload and `removed` key list for audit.
 
 ---
 
 ## Proof manifest
 
-Returned by `buildProofManifest()`:
-
 | Field | Description |
 | --- | --- |
-| `jobId` | Unique job identifier (hash of digest + timestamp) |
+| `jobId` | Unique job identifier |
 | `planHash` | Hash of approved `ExecutionPlan` |
 | `delegationHash` | Hash of delegation tree |
 | `requestDigest` | Bound payment identifier |
 | `quoteHash` | Hash of accepted price quote |
-| `relayTaskId` | 1Shot task reference |
-| `transactionHash` | Base transaction hash |
+| `relayTaskId` | 1Shot task reference (live) |
+| `transactionHash` | Primary on-chain tx if any |
+| `onChainTransactions` | `{ anchor?, consume?, relay? }` — verified BaseScan links only |
 | `proofHash` | Final composite proof |
-| `paidUSDC` | Amount settled (demo: 0.18) |
-| `anchoredAt` | ISO timestamp |
+| `paidUSDC` | Amount settled |
 | `status` | `confirmed` |
 
-In demo mode all hashes are deterministically derived. In live mode the same fields populate from real relay and registry events.
+Off-chain hashes (delegation, digest, proof binding) are copy-only in the UI — not Base transactions.
 
 ---
 
@@ -425,25 +439,17 @@ In demo mode all hashes are deterministically derived. In live mode the same fie
 
 ### `POST /api/plan`
 
-**Request:**
+**Request:** `{ "intent": "…" }` (min 8 chars)
 
-```json
-{ "intent": "Research the safest Base USDC yield opportunity…" }
-```
+**Response (200):** `{ plan, risk, delegations, source, warning? }`
 
-**Response (200):**
+### `POST /api/delegations`
 
-```json
-{
-  "plan": { "intent": "…", "chainId": 8453, "maxBudgetUSDC": 8, "…": "…" },
-  "risk": { "score": 18, "verdict": "allow", "note": "…", "findings": [], "controls": [], "piiFindings": [] },
-  "delegations": [{ "id": "root:…", "label": "Session Orchestrator", "…": "…" }],
-  "source": "venice-live",
-  "warning": "optional fallback notice"
-}
-```
+**Request:** `{ plan, permissionContext }`
 
-**Errors:** `400` intent too short · `500` planner failure
+**Response (200):** `{ mode, delegations, bundles?, sessionAccount?, message? }`
+
+**Errors:** `400` empty permission context
 
 ### `POST /api/executions`
 
@@ -452,22 +458,23 @@ In demo mode all hashes are deterministically derived. In live mode the same fie
 ```json
 {
   "plan": { "…": "ExecutionPlan" },
-  "delegations": [{ "…": "DelegationNode" }]
+  "delegations": [{ "…": "DelegationNode" }],
+  "permissionContext": "0x…",
+  "signedBundle": { "…": "optional" }
 }
 ```
 
-**Response (200):**
+**Response (200):** `{ manifest, metadata, relay, anchor, mode, events }`
 
-```json
-{
-  "manifest": { "jobId": "0x…", "requestDigest": "0x…", "…": "…" },
-  "metadata": { "clean": { "query": "…" }, "removed": ["email", "wallet_label"] },
-  "relay": { "provider": "1Shot permissionless relayer", "status": "confirmed", "…": "…" },
-  "events": [{ "label": "402 challenge received", "detail": "…" }]
-}
-```
+**Errors:** `409 REPLAY_BLOCKED` · `500` execution failure (digest released)
 
-**Errors:** `409 REPLAY_BLOCKED` · `500` validation failure
+### `POST /api/budget`
+
+**Request:** `{ permissionContext }` — returns `availableUSDC` from period enforcer.
+
+### `POST /api/revoke`
+
+Demo revoke when no live context; live revoke is browser-only via `revokeRootPermission()`.
 
 ---
 
@@ -476,62 +483,65 @@ In demo mode all hashes are deterministically derived. In live mode the same fie
 ### `ProofRegistry`
 
 ```solidity
-mapping(bytes32 => bool) public consumedRequestDigests;
-mapping(bytes32 => bytes32) public latestProofHashByJob;
-
 function consumeRequest(bytes32 requestDigest) external;
 function anchorProof(bytes32 jobId, bytes32 delegationHash, bytes32 proofHash) external;
 ```
 
-**Events:**
-
-- `RequestConsumed(bytes32 indexed requestDigest)`
-- `ProofAnchored(bytes32 indexed jobId, bytes32 indexed delegationHash, bytes32 proofHash)`
-
-**Replay protection:** `consumeRequest` reverts with `RequestAlreadyConsumed` if the digest was already spent.
-
-Deploy to Base and pass the address into the execution adapter for live anchoring.
+Deploy: `npm run deploy:registry` on Base. Set `PROOF_REGISTRY_ADDRESS` and `ANCHOR_PRIVATE_KEY`.
 
 ---
 
 ## Dashboard phases
 
-The UI tracks six phases with explicit state transitions:
+Internal phase state drives the six-step flow strip:
 
-| Phase | User action | System state |
+| Phase | Flow steps active | User action |
 | --- | --- | --- |
-| `intent` | Enter mission | Awaiting plan |
-| `planned` | Build plan | Plan + risk + delegation tree ready |
-| `granted` | Grant permission | Root scope active |
-| `executing` | Execute flow | Digest locked, relay in progress |
-| `confirmed` | — | Proof manifest anchored |
-| `revoked` | Revoke root | All agents disabled; execution blocked |
+| `intent` | Plan | Enter mission |
+| `planned` | Plan, Grant | Build plan |
+| `granted` | through Permit | Grant permission |
+| `executing` | through Relay | Execute (in flight) |
+| `confirmed` | all six including Proof | — |
+| `revoked` | all lit; budget $0 | Revoke root |
 
-**Adversarial controls** (panel 07):
+**Adversarial controls:**
 
-- **Replay exact request** — expects `409` before payment
-- **Revoke root delegation** — immediately zeroes budget and blocks execution
+- **Replay exact request** — expects `409` (demo of idempotency)
+- **Revoke root delegation** — live via MetaMask; disables execute
+
+---
+
+## Live vs demo modes
+
+| Aspect | Demo (default) | Live |
+| --- | --- | --- |
+| Env | Empty / flags off | See README live prerequisites |
+| Wallet | Optional | MetaMask Flask + Smart Account on Base |
+| USDC | Not required | ~$0.02 in Smart Account for Execute |
+| Grant | Simulated `0xdemo…` context | Real ERC-7715 via MetaMask |
+| Grant `to` | N/A | 1Shot `targetAddress` |
+| 1Shot | Simulated task ID | Real estimate + send |
+| ProofRegistry | Simulated hashes | Real consume + anchor txs |
+| Revoke | API simulated | MetaMask `wallet_revokeExecutionPermission` |
+| UI checklist | Hidden | Flask + USDC banner when live env set |
 
 ---
 
 ## Live integration boundaries
 
-Live adapters live in `@r402/adapters` and are consumed by the API routes. Demo mode simulates relay/registry when credentials are absent; flip env flags for production.
-
 | Component | File | To go live |
 | --- | --- | --- |
-| Adapters | `packages/adapters/src/` | Venice, x402, 1Shot, ProofRegistry, ERC-7710 signing |
-| Planner | `apps/web/app/api/plan/route.ts` | `VENICE_API_KEY` (Venice risk agent + web search) |
-| Permission grant | `apps/web/lib/metamask.ts` | `NEXT_PUBLIC_SESSION_ACCOUNT`; MetaMask Flask + Smart Account |
-| Redelegation | `apps/web/app/api/delegations/route.ts` | `SESSION_PRIVATE_KEY` + granted `permissionContext` |
-| x402 settlement | `packages/adapters/src/x402.ts` | `X402_LIVE=true` + seller credentials |
-| 1Shot relay | `packages/adapters/src/oneshot.ts` | `ONE_SHOT_LIVE=true`; signed 7710 bundle from dashboard |
-| Webhook | `apps/web/app/api/webhooks/oneshot/route.ts` | `ONE_SHOT_WEBHOOK_SECRET` + `NEXT_PUBLIC_APP_URL` |
-| Proof anchor | `packages/adapters/src/proof.ts` | Deploy registry (`npm run deploy:registry`); set `PROOF_REGISTRY_ADDRESS`, `ANCHOR_PRIVATE_KEY` |
-| Revoke / budget | `apps/web/app/api/revoke`, `budget/` | On-chain disable + caveat enforcer read when session key is set |
-| Idempotency | `packages/core` `IdempotencyGuard` | In-memory for demo; swap for Redis / onchain `consumeRequest` first in production |
+| Adapters | `packages/adapters/src/` | Env flags + keys |
+| Planner | `apps/web/app/api/plan/route.ts` | `VENICE_API_KEY` or `GROQ_API_KEY` |
+| Permission grant | `apps/web/lib/metamask.ts` | Flask + Smart Account on Base |
+| Redelegation | `apps/web/app/api/delegations/route.ts` | `SESSION_PRIVATE_KEY`; skipped when `ONE_SHOT_LIVE` |
+| x402 | `packages/adapters/src/x402.ts` | `X402_LIVE=true` |
+| 1Shot relay | `packages/adapters/src/oneshot.ts` | `ONE_SHOT_LIVE=true` + granted `permissionContext` |
+| Webhook | `apps/web/app/api/webhooks/oneshot/route.ts` | `ONE_SHOT_WEBHOOK_SECRET` + public `NEXT_PUBLIC_APP_URL` |
+| Proof anchor | `packages/adapters/src/proof.ts` | Registry deploy + `ANCHOR_PRIVATE_KEY` |
+| Idempotency | `packages/core` | In-memory; durable store for production |
 
-**Do not** scatter live/demo branching across the UI. Keep production wiring in `@r402/adapters` and the API routes above.
+**Do not** scatter live/demo branching across UI components beyond the live checklist banner and mode labels.
 
 ---
 
@@ -539,21 +549,13 @@ Live adapters live in `@r402/adapters` and are consumed by the API routes. Demo 
 
 ### Add a new x402 seller
 
-1. Add URL prefix to `SELLER_ALLOWLIST` in `packages/core/src/index.ts`
-2. Add URL to `allowedResources` in `apps/web/app/api/plan/route.ts`
-3. Update planner system prompt if needed
-
-### Add a new child agent role
-
-1. Extend `buildDelegationTree()` with a new node — ensure `limitUSDC ≤ parent`
-2. Add UI card in `SentinelDashboard.tsx` delegation panel
-3. Wire redemption in execution adapter with narrowed 7710 caveats
+1. Add URL prefix to allowlists in `packages/core` and `/api/plan`
+2. Update planner system prompt if needed
 
 ### Harden for production
 
 - Durable idempotency (Redis + TTL aligned with quote expiry)
-- Webhook signature verification for 1Shot terminal status
-- Onchain-first digest consumption before x402 payment
+- Onchain `consumeRequest` before x402 payment
 - Rate limiting on `/api/plan` and `/api/executions`
 - Structured logging with `requestDigest` correlation ID
 
@@ -561,5 +563,6 @@ Live adapters live in `@r402/adapters` and are consumed by the API routes. Demo 
 
 ## Related documents
 
-- [README](../README.md) — quick start, configuration, demo flow
+- [README](../README.md) — quick start, configuration, live prerequisites
 - [Threat Model](./threat-model.md) — threat → control matrix
+- [Demo Storyboard](./demo-storyboard.md) — hackathon video script

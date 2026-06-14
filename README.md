@@ -13,7 +13,8 @@
   <a href="docs/architecture.md"><strong>Architecture</strong></a> ·
   <a href="docs/threat-model.md">Threat Model</a> ·
   <a href="#quick-start">Quick Start</a> ·
-  <a href="#demo-flow">Demo Flow</a>
+  <a href="#demo-flow">Demo Flow</a> ·
+  <a href="#live-prerequisites">Live Prerequisites</a>
 </p>
 
 ---
@@ -32,7 +33,7 @@ Autonomous agents need to spend money, call contracts, and buy data. Most stacks
 | **Policy engine** | Scores risk, enforces seller allowlists, and rejects over-broad budgets |
 | **Permission tree** | ERC-7715 root → ERC-7710 child agents (Payment, Execution, Proof) — each narrower than its parent |
 | **Payment guard** | x402 request digest binds method, URL, body, quote, plan, and delegation |
-| **Relay adapter** | 1Shot capabilities → estimate → send (7702 / 7710 execution bundle) |
+| **Relay adapter** | 1Shot capabilities → estimate → send (7710 bundle on Base) |
 | **Proof anchor** | `ProofRegistry` consumes the digest once and stores an auditable proof hash |
 
 The core invariant:
@@ -48,17 +49,17 @@ For the full system design — component boundaries, data flows, hash constructi
 ```text
 User intent
   → Venice Planner + Risk Policy          (@r402/core)
-  → ERC-7715 root periodic USDC permission (MetaMask Smart Accounts)
-  → Session Orchestrator
+  → ERC-7715 root periodic USDC permission (MetaMask Flask → 1Shot relayer target)
+  → Session Orchestrator (policy tree)
        → Payment Guard   : x402 seller · ≤ $2 · 10 min
-       → Execution Agent : 1Shot target · ≤ $5 · selector scope
-       → Proof Agent     : read + ProofRegistry anchor only
+       → Execution Agent : 1Shot relay · ≤ $5
+       → Proof Agent     : ProofRegistry anchor only
   → requestDigest(method, URL, body, quote, plan, delegation)
   → idempotency lock
   → x402 paid request
-  → 1Shot capabilities · estimate · send
+  → 1Shot getCapabilities · estimate · send (fee + work USDC transfers)
   → ProofRegistry.consumeRequest + anchorProof
-  → revoke root permission
+  → revoke root permission (MetaMask)
 ```
 
 **Read the deep dive:** [docs/architecture.md](docs/architecture.md)
@@ -72,6 +73,7 @@ r402/
 ├── apps/web/                  Next.js 16 dashboard + API routes
 │   ├── app/api/plan/          Venice / Groq planner endpoint
 │   ├── app/api/executions/    x402 binding, idempotency, proof manifest
+│   ├── app/api/delegations/   ERC-7710 redelegation (or policy tree when ONE_SHOT_LIVE)
 │   ├── components/            SentinelDashboard UI
 │   └── lib/metamask.ts        Live ERC-7715 permission request
 ├── packages/core/             Policy, hashing, delegation tree, idempotency
@@ -79,7 +81,8 @@ r402/
 ├── contracts/                 ProofRegistry.sol (Foundry)
 ├── docs/
 │   ├── architecture.md        System design (start here for internals)
-│   └── threat-model.md        Threat → control mapping
+│   ├── threat-model.md        Threat → control mapping
+│   └── demo-storyboard.md     Hackathon video script + live checklist
 └── tests/e2e/                 Playwright end-to-end demo flow
 ```
 
@@ -87,7 +90,7 @@ r402/
 
 ## Quick start
 
-**Requirements:** Node.js 20+, npm 10+. Optional: Foundry (contract tests), MetaMask Flask 13.5+ (live ERC-7715).
+**Requirements:** Node.js 20+, npm 10+. Optional: Foundry (contract tests), MetaMask Flask (live ERC-7715 only).
 
 ```bash
 git clone <repo-url> r402 && cd r402
@@ -95,7 +98,7 @@ npm install
 npm run dev
 ```
 
-Open **[http://localhost:3000](http://localhost:3000)**. The complete demo flow runs with **zero credentials**.
+Open **[http://localhost:3000](http://localhost:3000)**. With an empty `.env.local`, the complete demo flow runs with **zero credentials** — no wallet, no USDC, no Flask.
 
 Root `.env.local` is loaded automatically by the web app (`apps/web/next.config.ts`).
 
@@ -109,13 +112,14 @@ Root `.env.local` is loaded automatically by the web app (`apps/web/next.config.
 | `VENICE_MODEL` | No | Default: `venice-uncensored-1-2` |
 | `GROQ_API_KEY` | No | Free fallback if Venice is unavailable |
 | `GROQ_MODEL` | No | Default: `openai/gpt-oss-20b` |
-| `NEXT_PUBLIC_SESSION_ACCOUNT` | No | Session smart account for live ERC-7715 grant |
+| `NEXT_PUBLIC_SESSION_ACCOUNT` | No | Session orchestrator smart account (7710 signing + 1Shot work-transfer recipient) |
 | `SESSION_PRIVATE_KEY` | No | Session owner key for ERC-7710 redelegation signing |
 | `X402_LIVE` | No | Enable live x402 payment attempts (`true` / `false`) |
 | `ONE_SHOT_LIVE` | No | Enable live 1Shot relay estimate + send |
 | `ONE_SHOT_RELAYER_URL` | No | Default: `https://relayer.1shotapi.com/relayers` |
 | `ONE_SHOT_WEBHOOK_SECRET` | No | HMAC secret for `/api/webhooks/oneshot` |
 | `PROOF_REGISTRY_ADDRESS` | No | Deployed `ProofRegistry` on Base |
+| `NEXT_PUBLIC_PROOF_REGISTRY_ADDRESS` | No | Same address — BaseScan links in dashboard |
 | `ANCHOR_PRIVATE_KEY` | No | Key that calls `consumeRequest` + `anchorProof` |
 | `DEPLOYER_PRIVATE_KEY` | No | One-time deploy key for `npm run deploy:registry` |
 | `BASE_RPC_URL` | No | Default: `https://mainnet.base.org` |
@@ -126,11 +130,32 @@ Root `.env.local` is loaded automatically by the web app (`apps/web/next.config.
 
 **Permission modes:**
 
-- **Demo** (default): simulated ERC-7715 grant, simulated relay, deterministic proof artifacts.
-- **Live grant**: set `NEXT_PUBLIC_SESSION_ACCOUNT` + `SESSION_PRIVATE_KEY`. Connect MetaMask Flask on Base and grant periodic USDC.
-- **Live execution**: set `X402_LIVE`, `ONE_SHOT_LIVE`, `PROOF_REGISTRY_ADDRESS`, `ANCHOR_PRIVATE_KEY`. Deploy registry with `npm run deploy:registry`.
+| Mode | Env | Wallet | Behavior |
+| --- | --- | --- | --- |
+| **Demo** (default) | Empty or live flags off | Optional | Simulated grant, relay, proof |
+| **Live grant** | `NEXT_PUBLIC_SESSION_ACCOUNT` | MetaMask Flask on Base | Real ERC-7715 periodic USDC grant |
+| **Live execution** | `X402_LIVE`, `ONE_SHOT_LIVE`, registry + anchor keys | Flask + Smart Account + USDC | Real x402, 1Shot, ProofRegistry |
 
 Copy `.env.example` to `.env.local` and fill in what you need.
+
+---
+
+## Live prerequisites
+
+For **you** (live recording or dogfooding). **Visitors in demo mode need none of this.**
+
+| Requirement | Details |
+| --- | --- |
+| **MetaMask Flask** | Latest release (e.g. **13.34+**). Minimum **13.9+** for `erc20-token-periodic`. Regular MetaMask is **not** sufficient. |
+| **One extension** | Disable regular MetaMask if Flask is installed — two extensions break grant flows. |
+| **Base Smart Account** | Upgrade on **Base** (8453), not mainnet-only. |
+| **USDC on Base** | **≥ ~$0.02** in the connected Smart Account before Execute (~$0.01 relayer fee + ~$0.01 work transfer). Grant sets limits only — it does not fund the fee. |
+| **Grant recipient** | MetaMask delegates **to the 1Shot relayer `targetAddress`** from `relayer_getCapabilities` — required for relay redemption. |
+| **Registry** | Deploy once: `npm run deploy:registry` → set `PROOF_REGISTRY_ADDRESS` + `NEXT_PUBLIC_PROOF_REGISTRY_ADDRESS`. |
+
+The dashboard shows a **Live mode checklist** when `NEXT_PUBLIC_SESSION_ACCOUNT` and `ONE_SHOT_LIVE` are enabled.
+
+Full recording script: **[docs/demo-storyboard.md](docs/demo-storyboard.md)**
 
 ---
 
@@ -139,20 +164,18 @@ Copy `.env.example` to `.env.local` and fill in what you need.
 | Track / requirement | Status |
 | --- | --- |
 | Venice planner + risk agent + web search | ✅ Wired (`@r402/adapters`) |
-| ERC-7715 root permission (MetaMask) | ✅ `lib/metamask.ts` + dashboard grant |
-| ERC-7710 redelegation tree | ✅ `/api/delegations` + session signing |
+| ERC-7715 root permission (MetaMask Flask) | ✅ `lib/metamask.ts` + dashboard grant |
+| ERC-7710 redelegation tree | ✅ `/api/delegations` (skipped when `ONE_SHOT_LIVE` — direct 1Shot grant) |
 | x402 request binding + PII filter | ✅ `@r402/core` + `@r402/adapters/x402` |
 | 1Shot relay (capabilities → estimate → send) | ✅ `@r402/adapters/oneshot` |
 | 1Shot webhook HMAC verify | ✅ `/api/webhooks/oneshot` |
 | ProofRegistry contract + tests | ✅ Foundry 3/3 |
-| On-chain anchor adapter | ✅ `proof.ts` (needs deploy + env) |
-| Replay block + revoke | ✅ IdempotencyGuard + `/api/revoke` |
+| On-chain anchor adapter | ✅ `proof.ts` |
+| Replay block + revoke | ✅ IdempotencyGuard + MetaMask revoke |
 | Dashboard end-to-end demo | ✅ Plan → grant → execute → replay → revoke |
 | Unit tests + build + lint | ✅ `npm test`, `npm run build`, `npm run lint` |
 | Architecture + threat model + demo storyboard | ✅ `docs/` |
 | E2E spec | ✅ Playwright spec (install browsers to run) |
-
-**Live demo recording:** set env vars from [demo storyboard](docs/demo-storyboard.md), deploy registry once, record with MetaMask Flask on Base.
 
 ---
 
@@ -161,24 +184,25 @@ Copy `.env.example` to `.env.local` and fill in what you need.
 Walk through the dashboard in order:
 
 1. **Build a minimum-authority plan** — enter intent, run the Venice policy planner.
-2. **Grant the root permission** — simulated periodic USDC scope ($20 / 24h on Base).
+2. **Grant the root permission** — demo: simulated scope; live: MetaMask Flask periodic USDC on Base.
 3. **Inspect the authority map** — Payment Guard, Execution Agent, Proof Agent — each narrower than the root.
-4. **Execute the protected flow** — x402 binding → relay → proof manifest.
-5. **Replay the exact request** — idempotency guard returns `409 REPLAY_BLOCKED`.
-6. **Revoke the root** — all child agents disable immediately.
+4. **Execute the protected flow** — x402 binding → 1Shot relay → proof manifest.
+5. **Replay the exact request** — idempotency guard returns `409 REPLAY_BLOCKED` (intentional).
+6. **Revoke the root** — live: MetaMask on-chain revoke; demo: simulated disable.
 
-The UI labels simulated artifacts explicitly. Live adapters plug into the same boundaries documented in [Architecture → Live integration](docs/architecture.md#live-integration-boundaries).
+**409 on Execute** after a successful run is expected — same `requestDigest` cannot run twice. Change the intent and re-plan for a fresh run.
 
 ---
 
 ## Verification
 
 ```bash
-npm test              # @r402/core unit tests (digest, delegation, idempotency, PII)
+npm test              # @r402/core + @r402/adapters unit tests
 npm run test:e2e      # Playwright: plan → grant → execute → replay block → revoke
 npm run test:contracts # Foundry: ProofRegistry consume + anchor
 npm run build         # Production build
 npm run lint          # TypeScript check
+npm run deploy:registry  # Deploy ProofRegistry to Base (once)
 ```
 
 ---
@@ -194,6 +218,7 @@ Sentinel is designed **fail-closed**: stale quotes, unknown targets, duplicate d
 | Over-broad child agent | Every child budget ≤ parent; targets narrowed per role |
 | PII in x402 metadata | `sanitizeMetadata()` strips sensitive keys pre-flight |
 | Revoked permission reuse | Root revocation disables all children |
+| Empty ERC-7715 context | Reject `0x000…`; require Flask + Smart Account on Base |
 
 Full threat model: **[docs/threat-model.md](docs/threat-model.md)**
 
@@ -205,7 +230,7 @@ Full threat model: **[docs/threat-model.md](docs/threat-model.md)**
 - **Chain:** Base (chain ID 8453), viem, MetaMask Smart Accounts Kit (ERC-7715 / 7710)
 - **Inference:** Venice AI, Groq (structured JSON fallback)
 - **Payments:** x402 request binding
-- **Relay:** 1Shot permissionless relayer (7702 / 7710 bundles)
+- **Relay:** 1Shot public relayer (7710 bundles, USDC fee on Base)
 - **Contracts:** Solidity 0.8.24, Foundry
 - **Core logic:** `@r402/core` — canonical hashing, policy, delegation tree, proof manifest
 
@@ -213,21 +238,19 @@ Full threat model: **[docs/threat-model.md](docs/threat-model.md)**
 
 ## Live integration boundaries
 
-Live adapters live in `@r402/adapters` and are consumed by the API routes:
-
 | Boundary | File | Responsibility |
 | --- | --- | --- |
 | Adapters | `packages/adapters/src/` | Venice, x402, 1Shot, ProofRegistry, ERC-7710 |
 | Planner | `apps/web/app/api/plan/route.ts` | Venice / Groq → constrained `ExecutionPlan` |
-| Redelegation | `apps/web/app/api/delegations/route.ts` | Signed ERC-7710 child bundles |
+| Redelegation | `apps/web/app/api/delegations/route.ts` | Signed 7710 bundles, or policy tree when `ONE_SHOT_LIVE` |
 | Execution | `apps/web/app/api/executions/route.ts` | Digest lock, x402, relay, proof manifest |
 | Revoke / budget | `apps/web/app/api/revoke`, `budget/` | On-chain disable + caveat budget read |
 | Webhook | `apps/web/app/api/webhooks/oneshot/` | 1Shot HMAC verification |
 | Policy & crypto | `packages/core/src/index.ts` | Hashing, risk, delegation tree, PII filter |
-| Permissions | `apps/web/lib/metamask.ts` | Live ERC-7715 periodic USDC grant |
+| Permissions | `apps/web/lib/metamask.ts` | ERC-7715 grant to 1Shot relayer target |
 | Onchain proof | `contracts/src/ProofRegistry.sol` | One-time digest consumption + proof anchor |
 
-Demo storyboard for the submission video: **[docs/demo-storyboard.md](docs/demo-storyboard.md)**.
+Demo storyboard: **[docs/demo-storyboard.md](docs/demo-storyboard.md)**
 
 ---
 
