@@ -49,6 +49,7 @@ export async function runProtectedExecution(input: {
     relay = await runOneShotRelay({
       signedBundle: input.signedBundle,
       destinationUrl: `${adapterEnv.appUrl}/api/webhooks/oneshot`,
+      requestDigest,
     });
   } else {
     relay = {
@@ -115,9 +116,11 @@ export async function runProtectedExecution(input: {
       {
         label: "Proof anchored",
         detail:
-          anchor.mode === "live"
+          anchor.mode === "live" && anchor.transactionHash
             ? `ProofRegistry tx ${anchor.transactionHash}`
-            : "ProofRegistry emitted ProofAnchored",
+            : "warning" in anchor && anchor.warning
+              ? `Simulated anchor (${anchor.warning.slice(0, 80)})`
+              : "ProofRegistry emitted ProofAnchored",
       },
     ],
   };

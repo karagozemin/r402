@@ -21,6 +21,17 @@ export async function POST(request: Request) {
       });
     }
 
+    if (
+      typeof permissionContext === "string" &&
+      permissionContext.replace(/^0x/i, "").replace(/0/g, "").length === 0
+    ) {
+      return NextResponse.json({
+        mode: "simulated",
+        delegations: buildDelegationTree(plan, body.salt ?? "demo-salt"),
+        message: "MetaMask returned an empty permission context. Redelegation skipped.",
+      });
+    }
+
     const signed = await buildSignedRedelegations({ permissionContext, plan });
     return NextResponse.json({
       mode: "live",

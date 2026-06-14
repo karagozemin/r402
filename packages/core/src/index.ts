@@ -181,6 +181,10 @@ export class IdempotencyGuard {
     return true;
   }
 
+  release(digest: string) {
+    this.consumed.delete(digest);
+  }
+
   clear() {
     this.consumed.clear();
   }

@@ -66,6 +66,7 @@ export async function POST(request: Request) {
       events: result.events,
     });
   } catch (error) {
+    guard.release(requestDigest);
     return NextResponse.json(
       {
         error: error instanceof Error ? error.message : "Execution failed.",
