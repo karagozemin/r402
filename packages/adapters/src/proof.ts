@@ -67,66 +67,55 @@ export async function anchorProofOnChain(input: {
   }
 
   const registry = adapterEnv.proofRegistry as Address;
+  const { publicClient, walletClient } = createClients();
 
-  try {
-    const { publicClient, walletClient } = createClients();
+  const alreadyConsumed = await publicClient.readContract({
+    address: registry,
+    abi: proofRegistryAbi,
+    functionName: "consumedRequestDigests",
+    args: [input.requestDigest],
+  });
 
-    const alreadyConsumed = await publicClient.readContract({
+  let consumeHash: Hex | null = null;
+  if (!alreadyConsumed) {
+    consumeHash = await walletClient.writeContract({
       address: registry,
       abi: proofRegistryAbi,
-      functionName: "consumedRequestDigests",
+      functionName: "consumeRequest",
       args: [input.requestDigest],
     });
+    await publicClient.waitForTransactionReceipt({ hash: consumeHash });
+  }
 
-    let consumeHash: Hex | null = null;
-    if (!alreadyConsumed) {
-      consumeHash = await walletClient.writeContract({
-        address: registry,
-        abi: proofRegistryAbi,
-        functionName: "consumeRequest",
-        args: [input.requestDigest],
-      });
-      await publicClient.waitForTransactionReceipt({ hash: consumeHash });
-    }
+  const existingProof = await publicClient.readContract({
+    address: registry,
+    abi: proofRegistryAbi,
+    functionName: "latestProofHashByJob",
+    args: [input.jobId],
+  });
 
-    const existingProof = await publicClient.readContract({
-      address: registry,
-      abi: proofRegistryAbi,
-      functionName: "latestProofHashByJob",
-      args: [input.jobId],
-    });
-
-    if (existingProof !== ZERO_HASH && existingProof === input.proofHash) {
-      return {
-        mode: "live" as const,
-        transactionHash: consumeHash,
-        consumeTransactionHash: consumeHash,
-        registry,
-        note: "Proof already anchored for this job.",
-      };
-    }
-
-    const anchorHash = await walletClient.writeContract({
-      address: registry,
-      abi: proofRegistryAbi,
-      functionName: "anchorProof",
-      args: [input.jobId, input.delegationHash, input.proofHash],
-    });
-    await publicClient.waitForTransactionReceipt({ hash: anchorHash });
-
+  if (existingProof !== ZERO_HASH && existingProof === input.proofHash) {
     return {
       mode: "live" as const,
-      transactionHash: anchorHash,
+      transactionHash: consumeHash,
       consumeTransactionHash: consumeHash,
       registry,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Proof anchor failed";
-    return {
-      mode: "simulated" as const,
-      transactionHash: null,
-      warning: message,
-      registry,
+      note: "Proof already anchored for this job.",
     };
   }
+
+  const anchorHash = await walletClient.writeContract({
+    address: registry,
+    abi: proofRegistryAbi,
+    functionName: "anchorProof",
+    args: [input.jobId, input.delegationHash, input.proofHash],
+  });
+  await publicClient.waitForTransactionReceipt({ hash: anchorHash });
+
+  return {
+    mode: "live" as const,
+    transactionHash: anchorHash,
+    consumeTransactionHash: consumeHash,
+    registry,
+  };
 }

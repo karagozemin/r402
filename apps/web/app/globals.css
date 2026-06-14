@@ -366,6 +366,55 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .notice-error { border-color: rgba(255, 107, 107, 0.28); background: rgba(255, 107, 107, 0.06); }
 .notice-warning { border-color: rgba(255, 155, 97, 0.28); background: rgba(255, 155, 97, 0.06); }
 .notice-info { border-color: rgba(255, 255, 255, 0.08); }
+.live-prereq-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border: 1px solid rgba(130, 190, 255, 0.22);
+  background: rgba(130, 190, 255, 0.05);
+  border-radius: 10px;
+  color: #c5d4e4;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.live-prereq-banner .dot-icon {
+  color: #9ec4f0;
+  border-color: rgba(130, 190, 255, 0.32);
+}
+.live-prereq-copy { flex: 1; min-width: 0; }
+.live-prereq-copy strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #d8e8f8;
+  font-size: 13px;
+  font-weight: 600;
+}
+.live-prereq-copy p { margin: 0; color: #9eb0c4; }
+.live-prereq-link {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(130, 190, 255, 0.28);
+  color: #b8d4f5;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.live-prereq-link:hover { background: rgba(130, 190, 255, 0.1); }
+.execute-prereq {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(130, 190, 255, 0.18);
+  background: rgba(130, 190, 255, 0.04);
+  color: #9eb0c4;
+  font-size: 12px;
+  line-height: 1.4;
+}
 .notice small {
   color: var(--green);
   margin-left: auto;

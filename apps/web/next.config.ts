@@ -13,6 +13,10 @@ const nextConfig: NextConfig = {
   experimental: {
     externalDir: true,
   },
+  env: {
+    NEXT_PUBLIC_ONE_SHOT_LIVE: process.env.ONE_SHOT_LIVE ?? "false",
+    NEXT_PUBLIC_X402_LIVE: process.env.X402_LIVE ?? "false",
+  },
 };
 
 export default nextConfig;

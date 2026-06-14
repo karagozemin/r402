@@ -149,12 +149,10 @@ export function buildProofManifest(
     delegationHash,
   });
   const jobId = hashValue({ requestDigest, created: Date.now() });
-  const transactionHash = hashValue({ jobId, relay: "1shot", chainId: 8453 });
   const proofHash = hashValue({
     jobId,
     delegationHash,
     requestDigest,
-    transactionHash,
   });
 
   return {
@@ -164,7 +162,6 @@ export function buildProofManifest(
     requestDigest,
     quoteHash,
     relayTaskId: `task_${jobId.slice(2, 12)}`,
-    transactionHash,
     proofHash,
     paidUSDC: 0.18,
     anchoredAt: new Date().toISOString(),

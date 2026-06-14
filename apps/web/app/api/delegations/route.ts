@@ -1,5 +1,10 @@
 import { buildDelegationTree, planSchema } from "@r402/core";
-import { buildSignedRedelegations, redelegationReady } from "@r402/adapters";
+import {
+  adapterEnv,
+  buildSignedRedelegations,
+  isBlankPermissionContext,
+  redelegationReady,
+} from "@r402/adapters";
 import { NextResponse } from "next/server";
 import type { Hex } from "viem";
 
@@ -21,14 +26,23 @@ export async function POST(request: Request) {
       });
     }
 
-    if (
-      typeof permissionContext === "string" &&
-      permissionContext.replace(/^0x/i, "").replace(/0/g, "").length === 0
-    ) {
+    if (isBlankPermissionContext(permissionContext)) {
+      return NextResponse.json(
+        {
+          error:
+            "MetaMask returned an empty permission context (0x000…). Use MetaMask Flask 13.9+, upgrade to a Smart Account on Base, then grant again.",
+        },
+        { status: 400 },
+      );
+    }
+
+    if (adapterEnv.oneShotLive) {
       return NextResponse.json({
-        mode: "simulated",
-        delegations: buildDelegationTree(plan, body.salt ?? "demo-salt"),
-        message: "MetaMask returned an empty permission context. Redelegation skipped.",
+        mode: "live",
+        delegations: buildDelegationTree(plan, body.salt ?? "live-salt"),
+        bundles: [],
+        message:
+          "Root grant delegates directly to the 1Shot relayer. Child scopes are enforced at execution via the proof-bound plan.",
       });
     }
 

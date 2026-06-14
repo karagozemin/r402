@@ -7,6 +7,7 @@ import {
 } from "@r402/core";
 import { runProtectedExecution } from "@r402/adapters";
 import { NextResponse } from "next/server";
+import type { Hex } from "viem";
 
 const guard = new IdempotencyGuard();
 
@@ -41,6 +42,7 @@ export async function POST(request: Request) {
     const result = await runProtectedExecution({
       plan,
       delegations: body.delegations,
+      permissionContext: body.permissionContext as Hex | undefined,
       signedBundle: body.signedBundle,
       quoteUSDC,
     });

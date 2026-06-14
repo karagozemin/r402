@@ -8,7 +8,7 @@ import type {
 } from "@r402/core";
 import logo from "../../../r402.png";
 import { ToastStack, useToasts } from "./ToastStack";
-import { requestRootPermission } from "../lib/metamask";
+import { inspectMetaMaskAccount, requestRootPermission, revokeRootPermission } from "../lib/metamask";
 import Image from "next/image";
 import { useMemo, useState } from "react";
 import type { Address } from "viem";
@@ -33,6 +33,12 @@ type ExecutionResponse = {
     status: string;
     taskId?: string;
   };
+  anchor?: {
+    mode?: "live" | "simulated";
+    transactionHash?: string | null;
+    consumeTransactionHash?: string | null;
+    registry?: string;
+  };
   mode?: "live" | "simulated";
   events: { label: string; detail: string }[];
 };
@@ -46,8 +52,8 @@ const phaseIndex: Record<Phase, number> = {
   intent: 0,
   planned: 1,
   granted: 2,
-  executing: 3,
-  confirmed: 4,
+  executing: 4,
+  confirmed: 5,
   revoked: 5,
 };
 
@@ -55,6 +61,51 @@ type NoticeTone = "info" | "success" | "error" | "warning";
 
 const explorerBase =
   process.env.NEXT_PUBLIC_BASE_EXPLORER ?? "https://basescan.org";
+
+const proofRegistryAddress = process.env.NEXT_PUBLIC_PROOF_REGISTRY_ADDRESS;
+
+function envFlag(value?: string) {
+  return value === "true" || value === "1";
+}
+
+const liveGrantEnabled = Boolean(process.env.NEXT_PUBLIC_SESSION_ACCOUNT);
+const liveExecutionEnabled = envFlag(process.env.NEXT_PUBLIC_ONE_SHOT_LIVE);
+const isLiveMode = liveGrantEnabled && liveExecutionEnabled;
+
+const liveUsdcPrereqMessage =
+  "Keep ~$0.02+ USDC on Base in your connected MetaMask Smart Account before Execute (~$0.01 relayer fee + ~$0.01 work transfer). Both legs are USDC transfers required by periodic ERC-7715 permissions — not ETH.";
+
+function proofScanUrl(key: string, value: string, execution?: ExecutionResponse | null) {
+  if (key === "pii") return null;
+
+  const onChain = new Set<string>();
+  const txs = execution?.manifest.onChainTransactions;
+  if (txs?.anchor) onChain.add(txs.anchor.toLowerCase());
+  if (txs?.consume) onChain.add(txs.consume.toLowerCase());
+  if (txs?.relay) onChain.add(txs.relay.toLowerCase());
+  if (execution?.manifest.transactionHash) {
+    onChain.add(execution.manifest.transactionHash.toLowerCase());
+  }
+
+  if (
+    (key === "tx" || key === "anchor-tx" || key === "consume-tx" || key === "relay-tx") &&
+    value.startsWith("0x") &&
+    value.length === 66 &&
+    onChain.has(value.toLowerCase())
+  ) {
+    return `${explorerBase}/tx/${value}`;
+  }
+
+  if ((key === "digest" || key === "proof") && proofRegistryAddress) {
+    return `${explorerBase}/address/${proofRegistryAddress}#readContract`;
+  }
+
+  if (key === "delegation" || key === "digest" || key === "proof" || key === "relay") {
+    return null;
+  }
+
+  return null;
+}
 
 function noticeToneFor(message: string, phase: Phase): NoticeTone {
   if (message.includes("Replay blocked")) return "warning";
@@ -108,7 +159,11 @@ export function SentinelDashboard() {
   const [busy, setBusy] = useState(false);
   const [wallet, setWallet] = useState<string | null>(null);
   const [replayBlocked, setReplayBlocked] = useState(0);
-  const [notice, setNotice] = useState("Demo mode is active. Live adapters are ready for credentials.");
+  const [notice, setNotice] = useState(
+    isLiveMode
+      ? `Live mode active. ${liveUsdcPrereqMessage}`
+      : "Demo mode is active. Live adapters are ready for credentials.",
+  );
   const [copiedProofKey, setCopiedProofKey] = useState<string | null>(null);
   const [permissionContext, setPermissionContext] = useState<string | null>(null);
   const [rootDelegation, setRootDelegation] = useState<unknown>(null);
@@ -136,6 +191,28 @@ export function SentinelDashboard() {
     try {
       const accounts = await ethereum.request({ method: "eth_requestAccounts" });
       setWallet(accounts[0]);
+
+      const sessionAccount = process.env.NEXT_PUBLIC_SESSION_ACCOUNT;
+      if (sessionAccount) {
+        try {
+          const diagnostics = await inspectMetaMaskAccount(accounts[0] as Address);
+          setNotice(diagnostics.hint);
+          pushToast({
+            tone: diagnostics.smartAccountOnBase && diagnostics.supportsPeriodicOnBase ? "success" : "info",
+            title: diagnostics.smartAccountOnBase ? "Smart Account on Base" : "Base setup needed",
+            message: diagnostics.smartAccountOnBase
+              ? `${short(accounts[0], 8, 6)} · ${diagnostics.delegatorLabel ?? "7702"}`
+              : diagnostics.hint,
+          });
+        } catch (diagnosticError) {
+          const message =
+            diagnosticError instanceof Error ? diagnosticError.message : "Could not inspect MetaMask on Base.";
+          setNotice(message);
+          pushToast({ tone: "warning", title: "Base check", message });
+        }
+        return;
+      }
+
       setNotice("MetaMask connected. Ready to request a bounded permission.");
       pushToast({ tone: "success", title: "Wallet connected", message: short(accounts[0], 8, 6) });
     } catch {
@@ -199,7 +276,18 @@ export function SentinelDashboard() {
         setPermissionContext(context);
         setPhase("granted");
         setNotice(`Live ERC-7715 permission granted: ${short(context)}`);
-        pushToast({ tone: "success", title: "Permission granted", message: "Live ERC-7715 root scope is active on Base." });
+        pushToast({
+          tone: "success",
+          title: "Permission granted",
+          message: `Delegated to 1Shot relayer on Base · ${short(granted.from)}`,
+        });
+        if (isLiveMode) {
+          pushToast({
+            tone: "info",
+            title: "Before Execute",
+            message: liveUsdcPrereqMessage,
+          });
+        }
       } else {
         if (!wallet) setWallet("0x71C2...98A4");
         context = `0xdemo${Date.now().toString(16).padStart(58, "0")}`;
@@ -222,23 +310,37 @@ export function SentinelDashboard() {
           setSignedBundle({
             bundles: redelegationPayload.bundles,
             sessionAccount: redelegationPayload.sessionAccount,
+            permissionContext: context,
           });
+        } else if (redelegationPayload.mode === "live") {
+          setSignedBundle({ permissionContext: context, bundles: [] });
         }
 
         if (redelegationPayload.delegations) {
           setPlanData({ ...planData, delegations: redelegationPayload.delegations });
         }
 
-        if (redelegationPayload.mode === "simulated" && redelegationPayload.message) {
-          pushToast({ tone: "info", title: "Redelegation simulated", message: redelegationPayload.message });
+        if (redelegationPayload.mode === "live" && redelegationPayload.message) {
+          pushToast({
+            tone: "info",
+            title: "Policy tree ready",
+            message: redelegationPayload.message,
+          });
+        } else if (redelegationPayload.bundles?.length) {
+          pushToast({
+            tone: "success",
+            title: "Redelegation signed",
+            message: "Payment, execution, and proof child agents are live.",
+          });
         }
       } catch (redelegationError) {
         const message =
           redelegationError instanceof Error ? redelegationError.message : "Redelegation failed.";
+        setNotice(message);
         pushToast({
-          tone: "warning",
-          title: "Redelegation skipped",
-          message: `${message} You can still run the demo execute flow.`,
+          tone: "error",
+          title: "Redelegation failed",
+          message,
         });
       }
 
@@ -282,17 +384,23 @@ export function SentinelDashboard() {
         body: JSON.stringify({
           plan: planData.plan,
           delegations: planData.delegations,
+          permissionContext: permissionContext ?? undefined,
           signedBundle: signedBundle ?? undefined,
         }),
       });
       const payload = await response.json();
       if (response.status === 409) {
         setReplayBlocked((count) => count + 1);
-        setNotice("Replay blocked before payment: requestDigest was already consumed.");
+        const replayMessage = replay
+          ? "Replay blocked before payment: requestDigest was already consumed."
+          : "This request was already executed in this session. Build a new plan for a fresh run, or use Replay to test duplicate blocking.";
+        setNotice(replayMessage);
         pushToast({
           tone: "warning",
-          title: "Replay blocked",
-          message: "The request digest was already consumed — no duplicate payment.",
+          title: replay ? "Replay blocked" : "Already executed",
+          message: replay
+            ? "The request digest was already consumed — no duplicate payment."
+            : "Same plan + delegation digest was consumed. Re-plan to execute again.",
         });
         return;
       }
@@ -320,25 +428,39 @@ export function SentinelDashboard() {
   async function revoke() {
     setBusy(true);
     try {
+      const sessionAccount = process.env.NEXT_PUBLIC_SESSION_ACCOUNT;
+
+      if (sessionAccount && permissionContext) {
+        await revokeRootPermission(permissionContext as `0x${string}`);
+        setPhase("revoked");
+        setBudgetUSDC(0);
+        setNotice("Root delegation revoked on-chain via MetaMask.");
+        pushToast({
+          tone: "warning",
+          title: "Root revoked",
+          message: "MetaMask invalidated the permission context. All child agents are disabled.",
+        });
+        return;
+      }
+
       const response = await fetch("/api/revoke", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ delegation: rootDelegation ?? { demo: true, permissionContext } }),
+        body: JSON.stringify({
+          permissionContext: permissionContext ?? undefined,
+          demo: !permissionContext,
+        }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error);
 
       setPhase("revoked");
       setBudgetUSDC(0);
-      const noticeText =
-        payload.mode === "live" && payload.transactionHash
-          ? `Root delegation revoked on-chain: ${short(payload.transactionHash)}`
-          : "Root delegation revoked. All child agents are disabled immediately.";
-      setNotice(noticeText);
+      setNotice("Root delegation revoked. All child agents are disabled immediately.");
       pushToast({
         tone: "warning",
         title: "Root revoked",
-        message: payload.mode === "live" ? "On-chain revoke confirmed." : "All child agents disabled. Budget set to $0.00.",
+        message: "All child agents disabled. Budget set to $0.00.",
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Revoke failed.";
@@ -367,18 +489,31 @@ export function SentinelDashboard() {
       setCopiedProofKey(key);
       window.setTimeout(() => setCopiedProofKey((current) => (current === key ? null : current)), 1800);
 
-      if (key === "tx") {
+      const scanUrl = proofScanUrl(key, value, execution);
+      if (scanUrl) {
+        window.open(scanUrl, "_blank", "noopener,noreferrer");
+      }
+
+      pushToast({
+        tone: "success",
+        title: `${label} copied`,
+        message: scanUrl
+          ? "Opened confirmed Base transaction on BaseScan."
+          : "Off-chain binding hash copied (not a Base transaction).",
+        action: scanUrl ? { label: "Open BaseScan", href: scanUrl } : undefined,
+      });
+    } catch {
+      const scanUrl = proofScanUrl(key, value, execution);
+      if (scanUrl) {
+        window.open(scanUrl, "_blank", "noopener,noreferrer");
         pushToast({
-          tone: "success",
-          title: `${label} copied`,
-          message: "Full hash copied to clipboard.",
-          action: { label: "View on BaseScan", href: `${explorerBase}/tx/${value}` },
+          tone: "info",
+          title: `${label} opened`,
+          message: "BaseScan opened — clipboard access was blocked.",
+          action: { label: "Open BaseScan", href: scanUrl },
         });
         return;
       }
-
-      pushToast({ tone: "success", title: `${label} copied`, message: "Full value copied to clipboard." });
-    } catch {
       pushToast({ tone: "error", title: "Copy failed", message: "Could not access the clipboard." });
     }
   }
@@ -417,7 +552,7 @@ export function SentinelDashboard() {
         <div className="hero-metrics">
           <Metric value={replayBlocked.toString()} label="Replays blocked" tone="orange" />
           <Metric value={`$${availableBudget.toFixed(2)}`} label="Budget left" />
-          <Metric value={phase === "revoked" ? "Off" : permissionContext ? "Live" : "Demo"} label="Permission" />
+          <Metric value={phase === "revoked" ? "Off" : isLiveMode ? "Live" : permissionContext ? "Live" : "Demo"} label="Permission" />
         </div>
       </section>
 
@@ -436,6 +571,24 @@ export function SentinelDashboard() {
           </div>
         ))}
       </section>
+
+      {isLiveMode ? (
+        <div className="live-prereq-banner" role="status">
+          <DotIcon kind="spark" />
+          <div className="live-prereq-copy">
+            <strong>Live mode checklist · USDC on Base</strong>
+            <p>{liveUsdcPrereqMessage}</p>
+          </div>
+          <a
+            className="live-prereq-link"
+            href="https://bridge.base.org"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Bridge to Base
+          </a>
+        </div>
+      ) : null}
 
       <div className={`notice notice-${noticeTone}`}>
         <DotIcon kind={phase === "revoked" ? "lock" : noticeTone === "success" ? "check" : "spark"} />
@@ -565,6 +718,9 @@ export function SentinelDashboard() {
               </div>
             ))}
           </div>
+          {isLiveMode && phase === "granted" ? (
+            <p className="execute-prereq">Tip: keep ~$0.02 USDC on Base (~$0.01 relayer fee + ~$0.01 work transfer).</p>
+          ) : null}
           <button
             className="primary-button execute-button"
             disabled={!planData || phase !== "granted" || busy}
@@ -583,14 +739,30 @@ export function SentinelDashboard() {
             badge={execution ? "anchored" : "pending"}
           />
           <p className="proof-hint">
-            {execution ? "Click any artifact to copy · transaction opens BaseScan" : "Artifacts appear after execution"}
+            {execution
+              ? "On-chain txs open BaseScan. Delegation/digest/proof hashes are off-chain bindings until anchored."
+              : "Artifacts appear after execution"}
           </p>
           <div className="proof-grid">
             {[
               { key: "delegation", label: "Delegation hash", value: execution?.manifest.delegationHash },
               { key: "digest", label: "Request digest", value: execution?.manifest.requestDigest },
               { key: "relay", label: "Relay task ID", value: execution?.manifest.relayTaskId },
-              { key: "tx", label: "Transaction hash", value: execution?.manifest.transactionHash },
+              {
+                key: "tx",
+                label: "Anchor tx (Base)",
+                value: execution?.manifest.onChainTransactions?.anchor ?? execution?.manifest.transactionHash,
+              },
+              {
+                key: "consume-tx",
+                label: "Consume tx (Base)",
+                value: execution?.manifest.onChainTransactions?.consume,
+              },
+              {
+                key: "relay-tx",
+                label: "Relay tx (Base)",
+                value: execution?.manifest.onChainTransactions?.relay,
+              },
               { key: "proof", label: "Proof hash", value: execution?.manifest.proofHash },
               {
                 key: "pii",
@@ -606,7 +778,13 @@ export function SentinelDashboard() {
                   className={`proof-item ${ready ? "proof-item-active" : ""} ${copiedProofKey === key ? "proof-item-copied" : ""}`}
                   disabled={!ready}
                   onClick={() => handleProofClick(key, label, value)}
-                  title={ready ? `Copy ${label}` : "Pending execution"}
+                  title={
+                    ready
+                      ? proofScanUrl(key, value ?? "", execution)
+                        ? `Copy ${label} and open BaseScan`
+                        : `Copy ${label} (off-chain binding)`
+                      : "Pending execution"
+                  }
                 >
                   <span>{label}</span>
                   <strong>{short(value)}</strong>

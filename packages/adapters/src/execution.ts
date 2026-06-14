@@ -8,10 +8,12 @@ import { adapterEnv, liveExecutionReady } from "./env";
 import { runOneShotRelay } from "./oneshot";
 import { anchorProofOnChain } from "./proof";
 import { runX402Payment } from "./x402";
+import type { Hex } from "viem";
 
 export async function runProtectedExecution(input: {
   plan: ExecutionPlan;
   delegations: unknown;
+  permissionContext?: Hex;
   signedBundle?: Record<string, unknown>;
   quoteUSDC?: number;
 }) {
@@ -47,6 +49,7 @@ export async function runProtectedExecution(input: {
 
   if (adapterEnv.oneShotLive) {
     relay = await runOneShotRelay({
+      permissionContext: input.permissionContext,
       signedBundle: input.signedBundle,
       destinationUrl: `${adapterEnv.appUrl}/api/webhooks/oneshot`,
       requestDigest,
@@ -60,7 +63,6 @@ export async function runProtectedExecution(input: {
       },
       status: "confirmed",
       taskId: `task_${hashValue({ requestDigest }).slice(2, 12)}`,
-      transactionHash: hashValue({ requestDigest, relay: "simulated" }),
     };
   }
 
@@ -72,6 +74,24 @@ export async function runProtectedExecution(input: {
     proofHash: manifest.proofHash,
   });
 
+  const onChainTransactions: {
+    anchor?: `0x${string}`;
+    consume?: `0x${string}`;
+    relay?: `0x${string}`;
+  } = {};
+
+  if (anchor.mode === "live") {
+    if (anchor.transactionHash) onChainTransactions.anchor = anchor.transactionHash;
+    if (anchor.consumeTransactionHash) onChainTransactions.consume = anchor.consumeTransactionHash;
+  }
+
+  if (relay.mode === "live" && "transactionHash" in relay && relay.transactionHash) {
+    onChainTransactions.relay = relay.transactionHash as `0x${string}`;
+  }
+
+  const transactionHash =
+    onChainTransactions.anchor ?? onChainTransactions.relay ?? onChainTransactions.consume;
+
   const live = liveExecutionReady();
 
   return {
@@ -79,10 +99,8 @@ export async function runProtectedExecution(input: {
     requestDigest,
     manifest: {
       ...manifest,
-      transactionHash:
-        anchor.mode === "live" && anchor.transactionHash
-          ? anchor.transactionHash
-          : manifest.transactionHash,
+      ...(transactionHash ? { transactionHash } : {}),
+      ...(Object.keys(onChainTransactions).length ? { onChainTransactions } : {}),
       relayTaskId:
         "taskId" in relay && relay.taskId
           ? relay.taskId
@@ -118,9 +136,7 @@ export async function runProtectedExecution(input: {
         detail:
           anchor.mode === "live" && anchor.transactionHash
             ? `ProofRegistry tx ${anchor.transactionHash}`
-            : "warning" in anchor && anchor.warning
-              ? `Simulated anchor (${anchor.warning.slice(0, 80)})`
-              : "ProofRegistry emitted ProofAnchored",
+            : "ProofRegistry emitted ProofAnchored",
       },
     ],
   };

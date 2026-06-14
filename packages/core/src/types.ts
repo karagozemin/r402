@@ -39,7 +39,13 @@ export type ProofManifest = {
   requestDigest: `0x${string}`;
   quoteHash: `0x${string}`;
   relayTaskId: string;
-  transactionHash: `0x${string}`;
+  /** Set only when a transaction was confirmed on Base (anchor, consume, or relay). */
+  transactionHash?: `0x${string}`;
+  onChainTransactions?: {
+    anchor?: `0x${string}`;
+    consume?: `0x${string}`;
+    relay?: `0x${string}`;
+  };
   proofHash: `0x${string}`;
   paidUSDC: number;
   anchoredAt: string;
