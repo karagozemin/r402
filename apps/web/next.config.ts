@@ -10,6 +10,9 @@ try {
 
 const nextConfig: NextConfig = {
   transpilePackages: ["@r402/core"],
+  experimental: {
+    externalDir: true,
+  },
 };
 
 export default nextConfig;

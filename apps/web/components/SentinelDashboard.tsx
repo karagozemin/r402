@@ -6,7 +6,9 @@ import type {
   ProofManifest,
   RiskAssessment,
 } from "@r402/core";
+import logo from "../../../r402.png";
 import { requestRootPermission } from "../lib/metamask";
+import Image from "next/image";
 import { useMemo, useState } from "react";
 import type { Address } from "viem";
 
@@ -203,7 +205,9 @@ export function SentinelDashboard() {
 
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark"><ShieldIcon /></span>
+          <span className="brand-mark">
+            <Image src={logo} alt="r402" width={38} height={38} className="brand-logo" priority />
+          </span>
           <span className="brand-copy">
             <strong>r402</strong>
             <span>Sentinel</span>
@@ -462,7 +466,10 @@ export function SentinelDashboard() {
       </section>
 
       <footer>
-        <span><ShieldIcon small /> r402 Sentinel</span>
+        <span className="footer-brand">
+          <Image src={logo} alt="" width={20} height={20} className="footer-logo" aria-hidden />
+          r402 Sentinel
+        </span>
         <p>MetaMask Smart Accounts · ERC-7715 · ERC-7710 · x402 · Venice · 1Shot · Base</p>
         <b>PROOF OVER PROMISES</b>
       </footer>

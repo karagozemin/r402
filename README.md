@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="r402.png" alt="r402" width="200" />
+</p>
+
 # r402 Sentinel
 
 Proof-bound agent firewall for MetaMask Smart Accounts. A user grants one bounded
