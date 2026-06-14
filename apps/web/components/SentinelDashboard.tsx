@@ -7,6 +7,7 @@ import type {
   RiskAssessment,
 } from "@r402/core";
 import logo from "../../../r402.png";
+import { ToastStack, useToasts } from "./ToastStack";
 import { requestRootPermission } from "../lib/metamask";
 import Image from "next/image";
 import { useMemo, useState } from "react";
@@ -47,6 +48,27 @@ const phaseIndex: Record<Phase, number> = {
   revoked: 5,
 };
 
+type NoticeTone = "info" | "success" | "error" | "warning";
+
+const explorerBase =
+  process.env.NEXT_PUBLIC_BASE_EXPLORER ?? "https://basescan.org";
+
+function noticeToneFor(message: string, phase: Phase): NoticeTone {
+  if (message.includes("Replay blocked")) return "warning";
+  if (message.includes("failed") || message.includes("declined") || message.includes("blocked")) {
+    return "error";
+  }
+  if (phase === "confirmed" || message.includes("granted") || message.includes("confirmed") || message.includes("connected")) {
+    return "success";
+  }
+  if (message.includes("warning") || message.includes("Demo")) return "info";
+  return "info";
+}
+
+async function copyText(value: string) {
+  await navigator.clipboard.writeText(value);
+}
+
 function short(value?: string, start = 9, end = 7) {
   if (!value) return "Pending";
   if (value.length <= start + end + 3) return value;
@@ -84,6 +106,10 @@ export function SentinelDashboard() {
   const [wallet, setWallet] = useState<string | null>(null);
   const [replayBlocked, setReplayBlocked] = useState(0);
   const [notice, setNotice] = useState("Demo mode is active. Live adapters are ready for credentials.");
+  const [copiedProofKey, setCopiedProofKey] = useState<string | null>(null);
+  const { toasts, push: pushToast, dismiss: dismissToast } = useToasts();
+
+  const noticeTone = noticeToneFor(notice, phase);
 
   const availableBudget = useMemo(() => {
     if (phase === "revoked") return 0;
@@ -97,14 +123,17 @@ export function SentinelDashboard() {
     if (!ethereum) {
       setWallet("0x71C2...98A4");
       setNotice("MetaMask was not detected. Connected a demo smart account.");
+      pushToast({ tone: "info", title: "Demo wallet connected", message: "MetaMask not found — using a simulated account." });
       return;
     }
     try {
       const accounts = await ethereum.request({ method: "eth_requestAccounts" });
       setWallet(accounts[0]);
       setNotice("MetaMask connected. Ready to request a bounded permission.");
+      pushToast({ tone: "success", title: "Wallet connected", message: short(accounts[0], 8, 6) });
     } catch {
       setNotice("Wallet connection was declined.");
+      pushToast({ tone: "error", title: "Connection declined", message: "Approve the request in MetaMask to continue." });
     }
   }
 
@@ -123,15 +152,23 @@ export function SentinelDashboard() {
       setExecution(null);
       setReplayBlocked(0);
       setPhase("planned");
-      setNotice(payload.warning ?? (
+      const noticeText = payload.warning ?? (
         payload.source === "venice-live"
           ? "Venice returned a policy-safe executable plan."
           : payload.source === "groq-live"
             ? "Groq returned a policy-safe executable plan."
           : "Demo planner returned a policy-safe executable plan."
-      ));
+      );
+      setNotice(noticeText);
+      pushToast({
+        tone: "success",
+        title: "Plan ready",
+        message: `${payload.risk.verdict.toUpperCase()} · score ${payload.risk.score}/100 · ${payload.delegations.length} agent scopes`,
+      });
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Planning failed.");
+      const message = error instanceof Error ? error.message : "Planning failed.";
+      setNotice(message);
+      pushToast({ tone: "error", title: "Planning failed", message });
     } finally {
       setBusy(false);
     }
@@ -144,13 +181,17 @@ export function SentinelDashboard() {
       if (sessionAccount) {
         const granted = await requestRootPermission(sessionAccount);
         setNotice(`Live ERC-7715 permission granted: ${short(granted.context)}`);
+        pushToast({ tone: "success", title: "Permission granted", message: "Live ERC-7715 root scope is active on Base." });
       } else {
         if (!wallet) setWallet("0x71C2...98A4");
         setNotice("Demo ERC-7715 permission granted. Add NEXT_PUBLIC_SESSION_ACCOUNT for live mode.");
+        pushToast({ tone: "success", title: "Permission granted", message: "Demo root scope unlocked — you can execute the flow." });
       }
       setPhase("granted");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Permission request failed.");
+      const message = error instanceof Error ? error.message : "Permission request failed.";
+      setNotice(message);
+      pushToast({ tone: "error", title: "Permission failed", message });
     } finally {
       setBusy(false);
     }
@@ -160,6 +201,7 @@ export function SentinelDashboard() {
     if (!planData) return;
     if (phase === "revoked") {
       setNotice("Execution blocked: the root delegation is revoked.");
+      pushToast({ tone: "error", title: "Execution blocked", message: "Revoke is active — all child agents are disabled." });
       return;
     }
     setBusy(true);
@@ -176,6 +218,11 @@ export function SentinelDashboard() {
       if (response.status === 409) {
         setReplayBlocked((count) => count + 1);
         setNotice("Replay blocked before payment: requestDigest was already consumed.");
+        pushToast({
+          tone: "warning",
+          title: "Replay blocked",
+          message: "The request digest was already consumed — no duplicate payment.",
+        });
         return;
       }
       if (!response.ok) throw new Error(payload.error);
@@ -183,9 +230,16 @@ export function SentinelDashboard() {
       setExecution(payload);
       setPhase("confirmed");
       setNotice("Execution confirmed and proof manifest anchored.");
+      pushToast({
+        tone: "success",
+        title: "Execution confirmed",
+        message: `$${payload.manifest.paidUSDC} paid · proof anchored · click artifacts below to copy`,
+      });
     } catch (error) {
       setPhase("granted");
-      setNotice(error instanceof Error ? error.message : "Execution failed.");
+      const message = error instanceof Error ? error.message : "Execution failed.";
+      setNotice(message);
+      pushToast({ tone: "error", title: "Execution failed", message });
     } finally {
       setBusy(false);
     }
@@ -194,6 +248,41 @@ export function SentinelDashboard() {
   function revoke() {
     setPhase("revoked");
     setNotice("Root delegation revoked. All child agents are disabled immediately.");
+    pushToast({ tone: "warning", title: "Root revoked", message: "All child agents disabled. Budget set to $0.00." });
+  }
+
+  async function handleProofClick(key: string, label: string, value?: string) {
+    if (!execution || !value || value === "Pending") return;
+
+    if (key === "pii") {
+      const removed = execution.metadata.removed;
+      pushToast({
+        tone: "info",
+        title: "PII sanitized",
+        message: removed.length ? `Removed before payment: ${removed.join(", ")}` : "No sensitive fields detected.",
+      });
+      return;
+    }
+
+    try {
+      await copyText(value);
+      setCopiedProofKey(key);
+      window.setTimeout(() => setCopiedProofKey((current) => (current === key ? null : current)), 1800);
+
+      if (key === "tx") {
+        pushToast({
+          tone: "success",
+          title: `${label} copied`,
+          message: "Full hash copied to clipboard.",
+          action: { label: "View on BaseScan", href: `${explorerBase}/tx/${value}` },
+        });
+        return;
+      }
+
+      pushToast({ tone: "success", title: `${label} copied`, message: "Full value copied to clipboard." });
+    } catch {
+      pushToast({ tone: "error", title: "Copy failed", message: "Could not access the clipboard." });
+    }
   }
 
   const step = phaseIndex[phase];
@@ -206,16 +295,15 @@ export function SentinelDashboard() {
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark">
-            <Image src={logo} alt="r402" width={38} height={38} className="brand-logo" priority />
+            <Image src={logo} alt="r402" width={36} height={36} className="brand-logo" priority />
           </span>
           <span className="brand-copy">
             <strong>r402</strong>
             <span>Sentinel</span>
           </span>
-          <span className="tag">Proof-bound agent firewall</span>
         </div>
         <div className="top-actions">
-          <span className="network"><i /> Base Mainnet</span>
+          <span className="network"><i /> Base</span>
           <button className="wallet-button" onClick={connectWallet}>
             <span className="wallet-gem" />
             {wallet ? short(wallet, 6, 4) : "Connect MetaMask"}
@@ -225,71 +313,59 @@ export function SentinelDashboard() {
 
       <section className="hero">
         <div>
-          <div className="eyebrow"><span /> PROOF-BOUND AUTONOMY</div>
           <h1>Let agents act.<br /><em>Never let trust leak.</em></h1>
-          <p>
-            One bounded permission becomes a narrow, auditable execution chain.
-            Every payment, relay, and proof stays request-bound and revocable.
-          </p>
+          <p>One permission, narrow scope, every payment bound to the exact request.</p>
         </div>
         <div className="hero-metrics">
-          <Metric value={replayBlocked.toString()} label="replays blocked" tone="orange" />
-          <Metric value={`$${availableBudget.toFixed(2)}`} label="budget remaining" />
-          <Metric value={phase === "revoked" ? "OFF" : "LIVE"} label="permission state" />
+          <Metric value={replayBlocked.toString()} label="Replays blocked" tone="orange" />
+          <Metric value={`$${availableBudget.toFixed(2)}`} label="Budget left" />
+          <Metric value={phase === "revoked" ? "Off" : "Live"} label="Permission" />
         </div>
       </section>
 
       <section className="flow-strip">
         {[
-          ["Intent", "Natural language"],
-          ["Policy", "Venice risk plan"],
-          ["Permission", "ERC-7715 root"],
-          ["Payment", "x402 request"],
-          ["Relay", "1Shot 7710"],
-          ["Proof", "Onchain anchor"],
-        ].map(([title, label], index) => (
+          ["Plan", "Intent"],
+          ["Grant", "Policy"],
+          ["Permit", "Permission"],
+          ["Pay", "Payment"],
+          ["Relay", "Relay"],
+          ["Proof", "Proof"],
+        ].map(([title], index) => (
           <div className={`flow-step ${step >= index ? "active" : ""}`} key={title}>
-            <span className="flow-number">{step > index ? "✓" : `0${index + 1}`}</span>
-            <span><strong>{title}</strong><small>{label}</small></span>
-            {index < 5 && <b>→</b>}
+            <span className="flow-number">{step > index ? "✓" : index + 1}</span>
+            <strong>{title}</strong>
           </div>
         ))}
       </section>
 
-      <div className="notice">
-        <DotIcon kind={phase === "revoked" ? "lock" : "spark"} />
+      <div className={`notice notice-${noticeTone}`}>
+        <DotIcon kind={phase === "revoked" ? "lock" : noticeTone === "success" ? "check" : "spark"} />
         <span>{notice}</span>
-        <small>{busy ? "WORKING" : phase.toUpperCase()}</small>
+        <small>{busy ? "Working…" : phase}</small>
       </div>
 
       <section className="grid grid-top">
         <article className="panel intent-panel">
           <PanelHeader
-            number="01"
-            title="Define the mission"
-            subtitle="The planner will reduce it to minimum authority."
-            badge="VENICE"
+            title="Mission"
+            subtitle="Describe what the agent should do."
+            badge={planData?.source?.replace("-live", "") ?? "planner"}
           />
           <label className="intent-input">
             <textarea value={intent} onChange={(event) => setIntent(event.target.value)} />
             <span>{intent.length} chars</span>
           </label>
-          <div className="chip-row">
-            <span>Base only</span><span>Daily cap</span><span>Private inference</span>
-          </div>
           <button className="primary-button" disabled={busy || intent.length < 8} onClick={createPlan}>
-            <DotIcon kind="spark" />
-            {busy && phase === "intent" ? "Building policy..." : "Build proof-bound plan"}
-            <b>→</b>
+            {busy && phase === "intent" ? "Building plan..." : "Build proof-bound plan"}
           </button>
         </article>
 
         <article className="panel permission-panel">
           <PanelHeader
-            number="02"
-            title="Bounded permission"
-            subtitle="One root. Every child gets less."
-            badge="ERC-7715"
+            title="Permission"
+            subtitle="Grant a bounded USDC budget on Base."
+            badge="7715"
           />
           <div className="budget-card">
             <div className="budget-ring" style={{ "--budget": `${(availableBudget / 20) * 100}%` } as React.CSSProperties}>
@@ -315,29 +391,27 @@ export function SentinelDashboard() {
 
         <article className="panel risk-panel">
           <PanelHeader
-            number="03"
-            title="Risk decision"
-            subtitle="Machine-readable policy, human-readable why."
-            badge={planData?.risk.verdict.toUpperCase() ?? "WAITING"}
+            title="Risk check"
+            subtitle={planData?.risk.note ?? "Run the planner first."}
+            badge={planData?.risk.verdict ?? "waiting"}
           />
           <div className="risk-score">
             <div>
-              <strong>{planData?.risk.score ?? "--"}</strong>
+              <strong>{planData?.risk.score ?? "—"}</strong>
               <span>/100 risk</span>
             </div>
-            <p>{planData?.risk.note ?? "Generate a plan to run the risk engine."}</p>
           </div>
           <div className="check-list">
             {(planData?.risk.controls ?? [
-              "Request binding check",
-              "Authority narrowing check",
-              "PII metadata filter",
-              "Target allowlist check",
+              "Request binding",
+              "Authority narrowing",
+              "PII filter",
+              "Target allowlist",
             ]).map((control, index) => (
               <div className={planData ? "done" : ""} key={control}>
                 <DotIcon kind={planData ? "check" : "lock"} />
                 <span>{control}</span>
-                <small>{planData ? (index === 2 ? "2 REMOVED" : "PASS") : "PENDING"}</small>
+                <small>{planData ? (index === 2 ? "2 removed" : "Pass") : "—"}</small>
               </div>
             ))}
           </div>
@@ -347,10 +421,9 @@ export function SentinelDashboard() {
       <section className="grid grid-middle">
         <article className="panel delegation-panel">
           <PanelHeader
-            number="04"
-            title="Authority map"
-            subtitle="Redelegation can only narrow the root permission."
-            badge="ERC-7710"
+            title="Agent scopes"
+            subtitle="Each child gets less authority than the root."
+            badge="7710"
           />
           <div className="delegation-tree">
             {(planData?.delegations ?? [
@@ -375,10 +448,9 @@ export function SentinelDashboard() {
 
         <article className="panel execution-panel">
           <PanelHeader
-            number="05"
-            title="Protected execution"
-            subtitle="Challenge, pay, relay, verify."
-            badge={execution ? "CONFIRMED" : phase === "executing" ? "RUNNING" : "READY"}
+            title="Execute"
+            subtitle="Pay, relay, and anchor proof."
+            badge={execution ? "done" : phase === "executing" ? "running" : "ready"}
           />
           <div className="execution-rail">
             {(execution?.events ?? [
@@ -400,9 +472,7 @@ export function SentinelDashboard() {
             disabled={!planData || phase !== "granted" || busy}
             onClick={() => execute(false)}
           >
-            <ShieldIcon small />
-            {phase === "executing" ? "Executing protected flow..." : "Execute protected flow"}
-            <b>→</b>
+            {phase === "executing" ? "Executing..." : "Execute protected flow"}
           </button>
         </article>
       </section>
@@ -410,35 +480,52 @@ export function SentinelDashboard() {
       <section className="grid grid-bottom">
         <article className="panel proof-panel">
           <PanelHeader
-            number="06"
-            title="Proof manifest"
-            subtitle="Every claim resolves to a cryptographic artifact."
-            badge={execution ? "ANCHORED" : "PENDING"}
+            title="Proof"
+            subtitle="Cryptographic artifacts from this run."
+            badge={execution ? "anchored" : "pending"}
           />
+          <p className="proof-hint">
+            {execution ? "Click any artifact to copy · transaction opens BaseScan" : "Artifacts appear after execution"}
+          </p>
           <div className="proof-grid">
             {[
-              ["Delegation hash", execution?.manifest.delegationHash, "ERC-7710"],
-              ["Request digest", execution?.manifest.requestDigest, "x402 bound"],
-              ["Relay task ID", execution?.manifest.relayTaskId, "1Shot"],
-              ["Transaction hash", execution?.manifest.transactionHash, "Base"],
-              ["Proof hash", execution?.manifest.proofHash, "Registry"],
-              ["PII sanitization", execution ? `${execution.metadata.removed.length} fields removed` : undefined, "Pre-flight"],
-            ].map(([label, value, tag]) => (
-              <div className="proof-item" key={label}>
-                <span>{label}<b>{tag}</b></span>
-                <strong>{short(value)}</strong>
-                <i className={execution ? "proof-state done" : "proof-state"}>{execution ? "✓" : "·"}</i>
-              </div>
-            ))}
+              { key: "delegation", label: "Delegation hash", value: execution?.manifest.delegationHash },
+              { key: "digest", label: "Request digest", value: execution?.manifest.requestDigest },
+              { key: "relay", label: "Relay task ID", value: execution?.manifest.relayTaskId },
+              { key: "tx", label: "Transaction hash", value: execution?.manifest.transactionHash },
+              { key: "proof", label: "Proof hash", value: execution?.manifest.proofHash },
+              {
+                key: "pii",
+                label: "PII sanitization",
+                value: execution ? `${execution.metadata.removed.length} fields removed` : undefined,
+              },
+            ].map(({ key, label, value }) => {
+              const ready = Boolean(execution && value);
+              return (
+                <button
+                  type="button"
+                  key={key}
+                  className={`proof-item ${ready ? "proof-item-active" : ""} ${copiedProofKey === key ? "proof-item-copied" : ""}`}
+                  disabled={!ready}
+                  onClick={() => handleProofClick(key, label, value)}
+                  title={ready ? `Copy ${label}` : "Pending execution"}
+                >
+                  <span>{label}</span>
+                  <strong>{short(value)}</strong>
+                  <i className={execution ? "proof-state done" : "proof-state"} aria-hidden>
+                    {copiedProofKey === key ? "✓" : execution ? "⎘" : "·"}
+                  </i>
+                </button>
+              );
+            })}
           </div>
         </article>
 
         <article className="panel controls-panel">
           <PanelHeader
-            number="07"
-            title="Adversarial controls"
-            subtitle="Trust is tested, not assumed."
-            badge="FIREWALL"
+            title="Security tests"
+            subtitle="Verify replay blocking and revocation."
+            badge="firewall"
           />
           <button
             className="control-button replay"
@@ -446,8 +533,11 @@ export function SentinelDashboard() {
             onClick={() => execute(true)}
           >
             <span><DotIcon kind="arrow" /></span>
-            <div><strong>Replay exact request</strong><small>Expected result: blocked before payment</small></div>
-            <b>{replayBlocked ? `${replayBlocked} BLOCKED` : "TEST"}</b>
+            <div>
+              <strong>Replay exact request</strong>
+              <small>Should block before payment</small>
+            </div>
+            <b>{replayBlocked ? `${replayBlocked} blocked` : "Test"}</b>
           </button>
           <button
             className="control-button revoke"
@@ -455,13 +545,12 @@ export function SentinelDashboard() {
             onClick={revoke}
           >
             <span><DotIcon kind="lock" /></span>
-            <div><strong>Revoke root delegation</strong><small>Immediately disables every child agent</small></div>
-            <b>{phase === "revoked" ? "REVOKED" : "REVOKE"}</b>
+            <div>
+              <strong>Revoke root delegation</strong>
+              <small>Disables all child agents</small>
+            </div>
+            <b>{phase === "revoked" ? "Revoked" : "Revoke"}</b>
           </button>
-          <div className="control-note">
-            <ShieldIcon small />
-            <p><strong>Fail closed.</strong> A stale quote, unknown target, duplicate digest, or revoked permission stops the entire chain.</p>
-          </div>
         </article>
       </section>
 
@@ -470,29 +559,30 @@ export function SentinelDashboard() {
           <Image src={logo} alt="" width={20} height={20} className="footer-logo" aria-hidden />
           r402 Sentinel
         </span>
-        <p>MetaMask Smart Accounts · ERC-7715 · ERC-7710 · x402 · Venice · 1Shot · Base</p>
-        <b>PROOF OVER PROMISES</b>
+        <p>Base · MetaMask Smart Accounts · x402 · Venice · 1Shot</p>
       </footer>
+
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </main>
   );
 }
 
 function PanelHeader({
-  number,
   title,
   subtitle,
   badge,
 }: {
-  number: string;
   title: string;
   subtitle: string;
-  badge: string;
+  badge?: string;
 }) {
   return (
     <div className="panel-header">
-      <span className="panel-number">{number}</span>
-      <div><h2>{title}</h2><p>{subtitle}</p></div>
-      <b>{badge}</b>
+      <div>
+        <h2>{title}</h2>
+        <p>{subtitle}</p>
+      </div>
+      {badge ? <b>{badge}</b> : null}
     </div>
   );
 }
