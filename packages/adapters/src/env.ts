@@ -6,12 +6,6 @@ export function envFlag(name: string, fallback = false) {
   return value === "true" || value === "1";
 }
 
-export function requiredEnv(name: string) {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing ${name}`);
-  return value;
-}
-
 export const adapterEnv = {
   baseRpc: process.env.BASE_RPC_URL ?? "https://mainnet.base.org",
   veniceApiKey: process.env.VENICE_API_KEY,

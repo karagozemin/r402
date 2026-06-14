@@ -152,6 +152,7 @@ For **you** (live recording or dogfooding). **Visitors in demo mode need none of
 | **USDC on Base** | **≥ ~$0.02** in the connected Smart Account before Execute (~$0.01 relayer fee + ~$0.01 work transfer). Grant sets limits only — it does not fund the fee. |
 | **Grant recipient** | MetaMask delegates **to the 1Shot relayer `targetAddress`** from `relayer_getCapabilities` — required for relay redemption. |
 | **Registry** | Deploy once: `npm run deploy:registry` → set `PROOF_REGISTRY_ADDRESS` + `NEXT_PUBLIC_PROOF_REGISTRY_ADDRESS`. |
+| **Session account** | Generate once: `npm run generate:session` → set `NEXT_PUBLIC_SESSION_ACCOUNT` + `SESSION_PRIVATE_KEY`. |
 
 The dashboard shows a **Live mode checklist** when `NEXT_PUBLIC_SESSION_ACCOUNT` and `ONE_SHOT_LIVE` are enabled.
 
@@ -203,6 +204,7 @@ npm run test:contracts # Foundry: ProofRegistry consume + anchor
 npm run build         # Production build
 npm run lint          # TypeScript check
 npm run deploy:registry  # Deploy ProofRegistry to Base (once)
+npm run generate:session # Generate NEXT_PUBLIC_SESSION_ACCOUNT + SESSION_PRIVATE_KEY
 ```
 
 ---

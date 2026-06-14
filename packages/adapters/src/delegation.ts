@@ -17,13 +17,9 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base } from "viem/chains";
-import type { ExecutionPlan } from "@r402/core";
+import { isBlankPermissionContext, type ExecutionPlan } from "@r402/core";
+import { getOneShotCapabilities } from "./oneshot";
 import { adapterEnv, redelegationReady } from "./env";
-
-export function isBlankPermissionContext(context?: Hex | null) {
-  if (!context) return true;
-  return context.replace(/^0x/i, "").replace(/0/g, "").length === 0;
-}
 
 const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as Address;
 
@@ -35,27 +31,6 @@ export type RedelegationBundle = {
 
 function createBasePublicClient() {
   return createPublicClient({ chain: base, transport: http(adapterEnv.baseRpc) });
-}
-
-async function fetchOneShotRelayTarget() {
-  const response = await fetch(adapterEnv.oneShotRelayer, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: Date.now(),
-      method: "relayer_getCapabilities",
-      params: ["8453"],
-    }),
-  });
-  const payload = (await response.json()) as {
-    result?: Record<string, { targetAddress?: string }>;
-    error?: { message: string };
-  };
-  if (payload.error) throw new Error(payload.error.message);
-  const target = payload.result?.["8453"]?.targetAddress;
-  if (!target) throw new Error("1Shot relayer did not return a Base targetAddress.");
-  return target as Address;
 }
 
 export async function buildSignedRedelegations(input: {
@@ -79,8 +54,7 @@ export async function buildSignedRedelegations(input: {
   const paymentTarget = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as Address;
   const executionTarget = input.plan.allowedTargets[0] as Address;
   const proofTarget = (adapterEnv.proofRegistry ?? executionTarget) as Address;
-  const relayCaps = await fetchOneShotRelayTarget();
-  const relayTarget = relayCaps;
+  const relayTarget = (await getOneShotCapabilities()).targetAddress as Address;
 
   const bundles: RedelegationBundle[] = [];
 
@@ -188,7 +162,6 @@ export async function readRemainingBudget(permissionContext?: Hex) {
 }
 
 export async function disableRootDelegation(input: {
-  delegation?: unknown;
   permissionContext?: Hex;
   demo?: boolean;
 }) {

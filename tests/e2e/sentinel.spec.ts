@@ -12,7 +12,9 @@ test("confirms a protected execution, blocks replay, and revokes the root", asyn
   ).toBeVisible();
 
   await page.getByRole("button", { name: "Execute protected flow" }).click();
-  await expect(page.getByText("Execution confirmed and proof manifest anchored.")).toBeVisible();
+  await expect(
+    page.getByText(/Execution confirmed \(simulated\) and proof manifest anchored\./),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Replay exact request" }).click();
   await expect(

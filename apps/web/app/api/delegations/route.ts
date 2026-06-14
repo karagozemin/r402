@@ -1,8 +1,7 @@
-import { buildDelegationTree, planSchema } from "@r402/core";
+import { buildDelegationTree, isBlankPermissionContext, planSchema } from "@r402/core";
 import {
   adapterEnv,
   buildSignedRedelegations,
-  isBlankPermissionContext,
   redelegationReady,
 } from "@r402/adapters";
 import { NextResponse } from "next/server";
@@ -30,7 +29,7 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           error:
-            "MetaMask returned an empty permission context (0x000…). Use MetaMask Flask 13.9+, upgrade to a Smart Account on Base, then grant again.",
+            "MetaMask returned an empty permission context (0x000…). Use the latest MetaMask Flask, upgrade to a Smart Account on Base, then grant again.",
         },
         { status: 400 },
       );

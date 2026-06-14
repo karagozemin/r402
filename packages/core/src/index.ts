@@ -169,6 +169,11 @@ export function buildProofManifest(
   };
 }
 
+export function isBlankPermissionContext(context?: string | null) {
+  if (!context) return true;
+  return context.replace(/^0x/i, "").replace(/0/g, "").length === 0;
+}
+
 export class IdempotencyGuard {
   private consumed = new Set<string>();
 
@@ -180,9 +185,5 @@ export class IdempotencyGuard {
 
   release(digest: string) {
     this.consumed.delete(digest);
-  }
-
-  clear() {
-    this.consumed.clear();
   }
 }

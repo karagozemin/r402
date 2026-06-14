@@ -4,6 +4,7 @@ import {
   createRequestDigest,
   hashValue,
   IdempotencyGuard,
+  isBlankPermissionContext,
   sanitizeMetadata,
 } from "../src";
 import type { ExecutionPlan } from "../src";
@@ -49,6 +50,14 @@ describe("proof-bound core", () => {
     const guard = new IdempotencyGuard();
     expect(guard.consume("0xabc")).toBe(true);
     expect(guard.consume("0xabc")).toBe(false);
+    guard.release("0xabc");
+    expect(guard.consume("0xabc")).toBe(true);
+  });
+
+  it("detects blank permission contexts", () => {
+    expect(isBlankPermissionContext(undefined)).toBe(true);
+    expect(isBlankPermissionContext(`0x${"0".repeat(64)}`)).toBe(true);
+    expect(isBlankPermissionContext("0xabc")).toBe(false);
   });
 
   it("removes private metadata before payment", () => {

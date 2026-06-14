@@ -1,5 +1,6 @@
 "use client";
 
+import { isBlankPermissionContext } from "@r402/core";
 import { erc7715ProviderActions } from "@metamask/smart-accounts-kit/actions";
 import { getSmartAccountsEnvironment } from "@metamask/smart-accounts-kit";
 import {
@@ -17,8 +18,12 @@ import { base } from "viem/chains";
 
 const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const BASE_RPC = process.env.NEXT_PUBLIC_BASE_RPC_URL ?? "https://mainnet.base.org";
+const ONE_SHOT_RELAYER = "https://relayer.1shotapi.com/relayers";
 const PERIODIC_TYPE = "erc20-token-periodic";
 const DELEGATION_PREFIX = "0xef0100";
+
+const FLASK_HINT =
+  "Use the latest MetaMask Flask from https://metamask.io/flask (minimum 13.9+ for erc20-token-periodic). Regular MetaMask is not sufficient.";
 
 type SmartAccountsEnvironment = ReturnType<typeof getSmartAccountsEnvironment>;
 
@@ -42,16 +47,11 @@ export type MetaMaskAccountDiagnostics = {
   hint: string;
 };
 
-export function isBlankPermissionContext(context?: Hex | null) {
-  if (!context) return true;
-  return context.replace(/^0x/i, "").replace(/0/g, "").length === 0;
-}
-
 function getProvider() {
   const provider = (window as Window & { ethereum?: EIP1193Provider }).ethereum;
   if (!provider) {
     throw new Error(
-      "MetaMask Flask is required for live ERC-7715 permissions. Install MetaMask Flask 13.9+ from https://metamask.io/flask",
+      `MetaMask Flask is required for live ERC-7715 permissions. ${FLASK_HINT}`,
     );
   }
   return provider;
@@ -148,12 +148,12 @@ export async function inspectMetaMaskAccount(grantor?: Address): Promise<MetaMas
   let hint = "Ready to request ERC-7715 on Base.";
   if (!supports7715) {
     hint =
-      "This extension does not expose ERC-7715. Install MetaMask Flask 13.9+ (regular MetaMask is not enough).";
+      `This extension does not expose ERC-7715. ${FLASK_HINT}`;
   } else if (!supportsPeriodicOnBase) {
     hint = "Flask is connected but erc20-token-periodic is not listed for Base yet.";
   } else if (!smartAccountOnBase) {
     hint =
-      "ERC-7715 is available, but this address is not upgraded on Base yet. Stay on Base in MetaMask, open Accounts → Smart Account, upgrade on Base (not Ethereum mainnet), then grant again. Flask 13.9+ may also offer upgrade inside the grant popup.";
+      "ERC-7715 is available, but this address is not upgraded on Base yet. Stay on Base in MetaMask, open Accounts → Smart Account, upgrade on Base (not Ethereum mainnet), then grant again.";
   }
 
   return {
@@ -176,14 +176,14 @@ async function preflightGrant(provider: EIP1193Provider) {
     supported = await walletClient.getSupportedExecutionPermissions();
   } catch {
     throw new Error(
-      "This wallet does not support ERC-7715 Advanced Permissions. Regular MetaMask returns empty 0x000… context — install MetaMask Flask 13.9+.",
+      `This wallet does not support ERC-7715 Advanced Permissions. Regular MetaMask returns empty 0x000… context — ${FLASK_HINT}`,
     );
   }
 
   const periodic = supported[PERIODIC_TYPE];
   if (!periodic?.chainIds.includes(base.id)) {
     throw new Error(
-      `Wallet does not support ${PERIODIC_TYPE} on Base (8453). Use MetaMask Flask 13.9+ with a Smart Account on Base.`,
+      `Wallet does not support ${PERIODIC_TYPE} on Base (8453). ${FLASK_HINT} Upgrade to a Smart Account on Base.`,
     );
   }
 }
@@ -201,7 +201,7 @@ function grantFailureMessage(diagnostics: MetaMaskAccountDiagnostics, grantTarge
 }
 
 async function fetchRelayerGrantTarget(): Promise<Address> {
-  const response = await fetch("https://relayer.1shotapi.com/relayers", {
+  const response = await fetch(ONE_SHOT_RELAYER, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -223,7 +223,7 @@ async function fetchRelayerGrantTarget(): Promise<Address> {
   return getAddress(target);
 }
 
-export async function requestRootPermission(_sessionAccount?: Address): Promise<GrantedPermission> {
+export async function requestRootPermission(): Promise<GrantedPermission> {
   const provider = getProvider();
   await ensureBaseNetwork(provider);
 

@@ -40,6 +40,12 @@ Regular MetaMask cannot grant ERC-7715 periodic permissions. Disable the non-Fla
 
 ### 2. Env (`.env.local`)
 
+Generate a session orchestrator (once):
+
+```bash
+npm run generate:session
+```
+
 ```env
 VENICE_API_KEY=
 NEXT_PUBLIC_SESSION_ACCOUNT=          # session orchestrator smart account

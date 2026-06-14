@@ -273,7 +273,7 @@ export function SentinelDashboard() {
       let context: string;
 
       if (sessionAccount) {
-        const granted = await requestRootPermission(sessionAccount);
+        const granted = await requestRootPermission();
         context = granted.context;
         setRootDelegation(granted.granted);
         setPermissionContext(context);
@@ -315,8 +315,6 @@ export function SentinelDashboard() {
             sessionAccount: redelegationPayload.sessionAccount,
             permissionContext: context,
           });
-        } else if (redelegationPayload.mode === "live") {
-          setSignedBundle({ permissionContext: context, bundles: [] });
         }
 
         if (redelegationPayload.delegations) {
